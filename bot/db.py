@@ -1,7 +1,18 @@
 import enum
 from datetime import UTC, datetime
 
-from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, Integer, String, TypeDecorator
+from sqlalchemy import (
+    BigInteger,
+    Connection,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    String,
+    TypeDecorator,
+    inspect,
+    text,
+)
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -63,6 +74,8 @@ class Event(Base):
         Enum(EventStatus, values_callable=lambda e: [m.value for m in e]),
         default=EventStatus.ACTIVE,
     )
+    # Когда прислать следующее напоминание (None — ничего не запланировано)
+    remind_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
@@ -74,6 +87,23 @@ def make_sessionmaker(engine: AsyncEngine) -> async_sessionmaker:
     return async_sessionmaker(engine, expire_on_commit=False)
 
 
+def _migrate(conn: Connection) -> None:
+    """Добавляет колонки, появившиеся после первой версии, в уже существующую базу."""
+    columns = {c["name"] for c in inspect(conn).get_columns("events")}
+    if "remind_at" not in columns:
+        conn.execute(text("ALTER TABLE events ADD COLUMN remind_at DATETIME"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_events_remind_at ON events (remind_at)"))
+        # Для уже сохранённых будущих событий назначаем напоминание по их настройке
+        conn.execute(
+            text(
+                "UPDATE events SET remind_at = datetime(starts_at, '-' || remind_before_min "
+                "|| ' minutes') WHERE status = 'active' AND starts_at > :now"
+            ),
+            {"now": utcnow().replace(tzinfo=None)},
+        )
+
+
 async def init_db(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_migrate)

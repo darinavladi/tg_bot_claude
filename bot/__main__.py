@@ -8,6 +8,7 @@ from bot.config import load_config
 from bot.db import init_db, make_engine, make_sessionmaker
 from bot.handlers import setup_routers
 from bot.middlewares import DbSessionMiddleware
+from bot.reminders import Reminders
 
 COMMANDS = [
     BotCommand(command="start", description="Начать"),
@@ -27,16 +28,21 @@ async def main() -> None:
     engine = make_engine(config.database_url)
     await init_db(engine)
 
+    sessionmaker = make_sessionmaker(engine)
+
     bot = Bot(token=config.bot_token)
-    dp = Dispatcher(config=config)
-    dp.update.middleware(DbSessionMiddleware(make_sessionmaker(engine)))
+    reminders = Reminders(bot, sessionmaker, config.default_tz)
+    dp = Dispatcher(config=config, reminders=reminders)
+    dp.update.middleware(DbSessionMiddleware(sessionmaker))
     dp.include_router(setup_routers())
 
     await bot.set_my_commands(COMMANDS)
     await bot.delete_webhook(drop_pending_updates=True)
+    await reminders.start()
     try:
         await dp.start_polling(bot)
     finally:
+        reminders.shutdown()
         await engine.dispose()
 
 

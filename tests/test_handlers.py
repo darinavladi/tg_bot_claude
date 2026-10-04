@@ -14,6 +14,7 @@ from bot.handlers import events
 from bot.keyboards import ConfirmCb, RemindCb
 
 USER = 42
+REMINDERS = SimpleNamespace(schedule=lambda *a: None)
 CONFIG = Config(bot_token="x", default_tz="Europe/Moscow", database_url="")
 
 
@@ -55,7 +56,7 @@ async def test_quick_add_and_save(session, state):
     assert await state.get_state() == events.AddEvent.confirm
 
     cb = callback()
-    await events.confirm_save(cb, state, session, CONFIG)
+    await events.confirm_save(cb, state, session, CONFIG, REMINDERS)
     assert "Сохранено" in cb.message.edit_text.call_args.args[0]
     assert await state.get_state() is None
 
@@ -93,7 +94,7 @@ async def test_step_by_step_add(session, state):
     await events.add_when(msg(future_text()), state, session, CONFIG)
     assert await state.get_state() == events.AddEvent.remind
 
-    await events.add_remind(callback(), RemindCb(minutes=60), state, session, CONFIG)
+    await events.add_remind(callback(), RemindCb(minutes=60), state, session, CONFIG, REMINDERS)
     saved = await repo.list_events(session, USER)
     assert [(e.title, e.remind_before_min) for e in saved] == [("Стоматолог", 60)]
     assert await state.get_state() is None
@@ -113,7 +114,7 @@ async def test_list(session, state):
     assert "нет" in m.answer.call_args.args[0]
 
     await events.quick_add(msg(f"{future_text()} Кино"), state, session, CONFIG)
-    await events.confirm_save(callback(), state, session, CONFIG)
+    await events.confirm_save(callback(), state, session, CONFIG, REMINDERS)
     m = msg("/list")
     await events.cmd_list(m, session, CONFIG)
     assert "Кино" in m.answer.call_args.args[0]
