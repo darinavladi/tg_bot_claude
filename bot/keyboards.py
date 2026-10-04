@@ -27,3 +27,24 @@ def remind_kb():
         kb.button(text=format_remind(minutes).capitalize(), callback_data=RemindCb(minutes=minutes))
     kb.adjust(2)
     return kb.as_markup()
+
+
+class ReminderCb(CallbackData, prefix="rem"):
+    action: str  # done | snooze
+    event_id: int
+    minutes: int = 0
+
+
+SNOOZE_OPTIONS = [(10, "10 мин"), (60, "1 час")]
+
+
+def reminder_kb(event_id: int):
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Готово", callback_data=ReminderCb(action="done", event_id=event_id))
+    for minutes, label in SNOOZE_OPTIONS:
+        kb.button(
+            text=f"💤 {label}",
+            callback_data=ReminderCb(action="snooze", event_id=event_id, minutes=minutes),
+        )
+    kb.adjust(1, len(SNOOZE_OPTIONS))
+    return kb.as_markup()

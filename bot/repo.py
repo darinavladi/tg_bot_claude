@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,6 +35,7 @@ async def add_event(
         title=title,
         starts_at=starts_at,
         remind_before_min=remind_before_min,
+        remind_at=starts_at - timedelta(minutes=remind_before_min),
     )
     session.add(event)
     await session.commit()
@@ -86,6 +87,8 @@ async def update_event(
         event.starts_at = starts_at
     if remind_before_min is not None:
         event.remind_before_min = remind_before_min
+    if starts_at is not None or remind_before_min is not None:
+        event.remind_at = event.starts_at - timedelta(minutes=event.remind_before_min)
     await session.commit()
     return event
 
@@ -97,6 +100,7 @@ async def _set_status(
     if event is None:
         return False
     event.status = status
+    event.remind_at = None
     await session.commit()
     return True
 
@@ -108,3 +112,16 @@ async def mark_done(session: AsyncSession, user_id: int, event_id: int) -> bool:
 async def delete_event(session: AsyncSession, user_id: int, event_id: int) -> bool:
     """Мягкое удаление: событие помечается отменённым и пропадает из списков."""
     return await _set_status(session, user_id, event_id, EventStatus.CANCELLED)
+
+
+async def set_remind_at(session: AsyncSession, event_id: int, remind_at: datetime | None) -> None:
+    event = await session.get(Event, event_id)
+    if event is not None:
+        event.remind_at = remind_at
+        await session.commit()
+
+
+async def list_pending_reminders(session: AsyncSession) -> list[Event]:
+    """Все активные события, по которым ещё нужно прислать напоминание."""
+    query = select(Event).where(Event.status == EventStatus.ACTIVE, Event.remind_at.is_not(None))
+    return list(await session.scalars(query.order_by(Event.remind_at)))

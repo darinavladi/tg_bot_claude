@@ -12,6 +12,7 @@ from bot.config import Config
 from bot.formatting import format_dt, format_remind
 from bot.keyboards import ConfirmCb, RemindCb, confirm_kb, remind_kb
 from bot.parser import ParseError, parse_datetime, parse_event
+from bot.reminders import Reminders
 
 router = Router(name="events")
 
@@ -98,12 +99,14 @@ async def add_remind(
     state: FSMContext,
     session: AsyncSession,
     config: Config,
+    reminders: Reminders,
 ) -> None:
     data = await state.get_data()
     await state.clear()
     user = await repo.get_or_create_user(session, callback.from_user.id, config.default_tz)
     starts_at = datetime.fromisoformat(data["starts_at"])
-    await repo.add_event(session, user.id, data["title"], starts_at, callback_data.minutes)
+    event = await repo.add_event(session, user.id, data["title"], starts_at, callback_data.minutes)
+    reminders.schedule(event.id, event.remind_at)
     await callback.message.edit_text(
         "✅ Сохранено\n\n"
         + _summary(data["title"], starts_at, callback_data.minutes, user.timezone)
@@ -138,13 +141,18 @@ async def quick_add(
 
 @router.callback_query(AddEvent.confirm, ConfirmCb.filter(F.action == "save"))
 async def confirm_save(
-    callback: CallbackQuery, state: FSMContext, session: AsyncSession, config: Config
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    config: Config,
+    reminders: Reminders,
 ) -> None:
     data = await state.get_data()
     await state.clear()
     user = await repo.get_or_create_user(session, callback.from_user.id, config.default_tz)
     starts_at = datetime.fromisoformat(data["starts_at"])
-    await repo.add_event(session, user.id, data["title"], starts_at, data["remind"])
+    event = await repo.add_event(session, user.id, data["title"], starts_at, data["remind"])
+    reminders.schedule(event.id, event.remind_at)
     await callback.message.edit_text(
         "✅ Сохранено\n\n" + _summary(data["title"], starts_at, data["remind"], user.timezone)
     )
