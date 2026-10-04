@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 class Config:
     bot_token: str
     default_tz: str
+    database_url: str
 
 
 def load_config() -> Config:
@@ -15,4 +16,8 @@ def load_config() -> Config:
     token = os.getenv("BOT_TOKEN")
     if not token:
         raise RuntimeError("BOT_TOKEN не задан. Скопируйте .env.example в .env и впишите токен.")
-    return Config(bot_token=token, default_tz=os.getenv("DEFAULT_TZ", "Europe/Moscow"))
+    return Config(
+        bot_token=token,
+        default_tz=os.getenv("DEFAULT_TZ", "Europe/Moscow"),
+        database_url=os.getenv("DATABASE_URL", "sqlite+aiosqlite:///planner.db"),
+    )

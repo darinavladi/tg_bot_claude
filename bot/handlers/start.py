@@ -1,6 +1,10 @@
 from aiogram import Router
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from bot import repo
+from bot.config import Config
 
 router = Router(name="start")
 
@@ -15,7 +19,9 @@ HELP_TEXT = (
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message) -> None:
+async def cmd_start(message: Message, session: AsyncSession, config: Config) -> None:
+    if message.from_user:
+        await repo.get_or_create_user(session, message.from_user.id, config.default_tz)
     name = message.from_user.first_name if message.from_user else "друг"
     await message.answer(f"Привет, {name}! 👋\n\n{HELP_TEXT}")
 
