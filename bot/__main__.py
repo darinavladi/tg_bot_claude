@@ -13,7 +13,9 @@ from bot.reminders import Reminders
 COMMANDS = [
     BotCommand(command="start", description="Начать"),
     BotCommand(command="add", description="Добавить событие"),
-    BotCommand(command="list", description="Ближайшие события"),
+    BotCommand(command="today", description="События на сегодня"),
+    BotCommand(command="week", description="События на 7 дней"),
+    BotCommand(command="list", description="Все запланированные события"),
     BotCommand(command="cancel", description="Отменить ввод"),
     BotCommand(command="help", description="Помощь"),
 ]

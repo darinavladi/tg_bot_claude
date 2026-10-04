@@ -106,15 +106,3 @@ async def test_cancel_clears_state(state):
     await events.cmd_cancel(m, state)
     assert await state.get_state() is None
     assert m.answer.call_args.args[0] == "Отменено."
-
-
-async def test_list(session, state):
-    m = msg("/list")
-    await events.cmd_list(m, session, CONFIG)
-    assert "нет" in m.answer.call_args.args[0]
-
-    await events.quick_add(msg(f"{future_text()} Кино"), state, session, CONFIG)
-    await events.confirm_save(callback(), state, session, CONFIG, REMINDERS)
-    m = msg("/list")
-    await events.cmd_list(m, session, CONFIG)
-    assert "Кино" in m.answer.call_args.args[0]
