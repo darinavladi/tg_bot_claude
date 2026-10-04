@@ -11,6 +11,9 @@ from bot.middlewares import DbSessionMiddleware
 
 COMMANDS = [
     BotCommand(command="start", description="Начать"),
+    BotCommand(command="add", description="Добавить событие"),
+    BotCommand(command="list", description="Ближайшие события"),
+    BotCommand(command="cancel", description="Отменить ввод"),
     BotCommand(command="help", description="Помощь"),
 ]
 
