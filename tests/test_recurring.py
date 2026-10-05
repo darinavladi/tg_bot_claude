@@ -18,7 +18,7 @@ from bot.handlers import reminders as reminder_handlers
 from bot.keyboards import EventCb, ReminderCb, RepeatCb
 from bot.parser import parse_event, parse_when
 from bot.reminders import Reminders
-from bot.timeutils import next_occurrence
+from bot.timeutils import next_occurrence, occurrences
 
 TZ = "Europe/Moscow"
 MSK = ZoneInfo(TZ)
@@ -48,6 +48,35 @@ def msk(y, mo, d, h, mi=0):
 )
 def test_next_occurrence(start, repeat, after, expected):
     assert next_occurrence(start, repeat, TZ, after) == expected
+
+
+def test_next_occurrence_keeps_month_day():
+    feb = msk(2026, 2, 28, 10)
+    assert next_occurrence(feb, "monthly", TZ, feb, day=31) == msk(2026, 3, 31, 10)
+    assert next_occurrence(feb, "monthly", TZ, feb) == msk(2026, 3, 28, 10)
+
+
+def test_occurrences():
+    week = (msk(2026, 10, 5, 0), msk(2026, 10, 12, 0))  # пн 5 — вс 11 октября
+    daily = occurrences(msk(2026, 10, 1, 8), "daily", TZ, *week)
+    assert daily == [msk(2026, 10, d, 8) for d in range(5, 12)]
+    weekdays = occurrences(msk(2026, 9, 1, 8), "weekdays", TZ, *week)
+    assert weekdays == [msk(2026, 10, d, 8) for d in range(5, 10)]
+    assert occurrences(msk(2026, 9, 30, 8), "weekly", TZ, *week) == [msk(2026, 10, 7, 8)]
+    # старая серия: начало года, без перебора с самого начала
+    assert occurrences(msk(2020, 1, 1, 8), "daily", TZ, *week)[0] == msk(2026, 10, 5, 8)
+    # серия ещё не началась
+    assert occurrences(msk(2026, 10, 9, 8), "daily", TZ, *week) == [
+        msk(2026, 10, 9, 8), msk(2026, 10, 10, 8), msk(2026, 10, 11, 8),
+    ]  # fmt: skip
+
+
+def test_occurrences_monthly_31():
+    year = (msk(2026, 1, 1, 0), msk(2027, 1, 1, 0))
+    days = [d.day for d in occurrences(msk(2026, 1, 31, 10), "monthly", TZ, *year)]
+    assert days == [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    later = occurrences(msk(2020, 1, 31, 10), "monthly", TZ, msk(2026, 2, 1, 0), msk(2026, 4, 1, 0))
+    assert later == [msk(2026, 2, 28, 10), msk(2026, 3, 31, 10)]
 
 
 def test_format_repeat():
@@ -122,6 +151,32 @@ async def test_roll_recurring(sm):
     assert moved.remind_at == moved.starts_at - timedelta(minutes=15)
     assert (await get(sm, one_off.id)).starts_at == one_off.starts_at
     assert (await get(sm, upcoming.id)).starts_at == upcoming.starts_at
+
+
+async def test_roll_monthly_returns_to_31st(sm):
+    event = await add(sm, msk(2026, 1, 31, 10), repeat="monthly")
+    async with sm() as s:
+        await repo.roll_recurring(s, msk(2026, 2, 1, 0))
+        assert (await get(sm, event.id)).starts_at == msk(2026, 2, 28, 10)
+        await repo.roll_recurring(s, msk(2026, 3, 1, 0))
+    assert (await get(sm, event.id)).starts_at == msk(2026, 3, 31, 10)
+
+
+async def test_list_occurrences(sm):
+    now = msk(2026, 10, 5, 12)
+    start, end = msk(2026, 10, 5, 0), msk(2026, 10, 12, 0)
+    daily = await add(sm, msk(2026, 10, 1, 8))
+    meeting = await add(sm, msk(2026, 10, 6, 15), repeat=None)
+    await add(sm, msk(2026, 10, 20, 9), repeat=None)  # за пределами недели
+    async with sm() as s:
+        await repo.roll_recurring(s, now)  # зарядка переехала на 6-е, но 5-е тоже видно
+        items = await repo.list_occurrences(s, USER, start, end, TZ)
+    assert [(w, e.id) for w, e in items][:3] == [
+        (msk(2026, 10, 5, 8), daily.id),
+        (msk(2026, 10, 6, 8), daily.id),
+        (msk(2026, 10, 6, 15), meeting.id),
+    ]
+    assert len(items) == 8
 
 
 async def test_roll_waits_for_snoozed_reminder(sm):
@@ -225,4 +280,5 @@ async def test_migration_adds_repeat(tmp_path):
     async with engine.connect() as conn:
         cols = [r[1] for r in await conn.execute(text("PRAGMA table_info(events)"))]
     assert "repeat" in cols
+    assert "repeat_anchor" in cols
     await engine.dispose()

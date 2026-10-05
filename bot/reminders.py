@@ -58,12 +58,12 @@ def reminder_text(event: Event, tz: str, now: datetime) -> str:
     return f"⏰ Пропущенное напоминание: {event.title}\n🕒 Было {when}"
 
 
-def summary_text(events: list[Event], tz: str, now: datetime) -> str:
+def summary_text(items: list[tuple[datetime, Event]], tz: str, now: datetime) -> str:
     day = format_day(now, tz, now)
-    if not events:
+    if not items:
         return f"☀️ Доброе утро! {day}\n\nНа сегодня ничего не запланировано."
     zone = ZoneInfo(tz)
-    lines = [f"{e.starts_at.astimezone(zone):%H:%M} {e.title}" for e in events]
+    lines = [f"{when.astimezone(zone):%H:%M} {event.title}" for when, event in items]
     return f"☀️ Доброе утро! {day}\n\nПлан на сегодня:\n" + "\n".join(lines)
 
 
@@ -179,8 +179,8 @@ class Reminders:
                 return
             now = datetime.now(UTC)
             start, end = period_range("today", user.timezone, now)
-            events = await repo.list_events(session, user_id, start=start, end=end)
+            items = await repo.list_occurrences(session, user_id, start, end, user.timezone)
         try:
-            await self.bot.send_message(user_id, summary_text(events, user.timezone, now))
+            await self.bot.send_message(user_id, summary_text(items, user.timezone, now))
         except TelegramAPIError:
             log.exception("Не удалось отправить утреннюю сводку пользователю %s", user_id)

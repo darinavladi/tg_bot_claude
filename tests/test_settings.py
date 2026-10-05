@@ -77,7 +77,7 @@ def test_summary_text():
         SimpleNamespace(title="Врач", starts_at=now + timedelta(hours=2)),
         SimpleNamespace(title="Кино", starts_at=now + timedelta(hours=11)),
     ]
-    text_ = summary_text(events, TZ, now)
+    text_ = summary_text([(e.starts_at, e) for e in events], TZ, now)
     assert "Сегодня, пн, 5 октября" in text_
     assert "10:00 Врач\n19:00 Кино" in text_
     assert "ничего не запланировано" in summary_text([], TZ, now)

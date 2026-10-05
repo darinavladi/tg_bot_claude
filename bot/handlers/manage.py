@@ -51,12 +51,15 @@ class EditEvent(StatesGroup):
 
 
 def render_list(
-    events: list[Event], kind: str, page: int, tz: str, now: datetime
+    items: list[tuple[datetime, Event]], kind: str, page: int, tz: str, now: datetime
 ) -> tuple[str, list[tuple[str, int]], int]:
-    """Текст страницы (с группировкой по дням), кнопки событий и число страниц."""
-    pages = max(1, ceil(len(events) / PAGE_SIZE))
+    """Текст страницы (с группировкой по дням), кнопки событий и число страниц.
+
+    items — пары (время, событие): повторяющееся событие может встречаться несколько раз.
+    """
+    pages = max(1, ceil(len(items) / PAGE_SIZE))
     page = min(max(page, 0), pages - 1)
-    chunk = events[page * PAGE_SIZE : (page + 1) * PAGE_SIZE]
+    chunk = items[page * PAGE_SIZE : (page + 1) * PAGE_SIZE]
 
     header = TITLES[kind]
     if pages > 1:
@@ -65,12 +68,12 @@ def render_list(
     buttons = []
     current_day = None
     zone = ZoneInfo(tz)
-    for n, event in enumerate(chunk, start=page * PAGE_SIZE + 1):
-        local = event.starts_at.astimezone(zone)
+    for n, (when, event) in enumerate(chunk, start=page * PAGE_SIZE + 1):
+        local = when.astimezone(zone)
         if local.date() != current_day:
             current_day = local.date()
-            lines.append(f"\n{format_day(event.starts_at, tz, now)}")
-        mark = " ✓" if event.starts_at < now else ""
+            lines.append(f"\n{format_day(when, tz, now)}")
+        mark = " ✓" if when < now else ""
         if getattr(event, "repeat", None):
             mark += " 🔁"
         lines.append(f"{n}. {local:%H:%M} {event.title}{mark}")
@@ -86,11 +89,16 @@ async def _show_list(
     user = await repo.get_or_create_user(session, user_id, config.default_tz)
     now = datetime.now(UTC)
     start, end = period_range(kind, user.timezone, now)
-    events = await repo.list_events(session, user_id, start=start, end=end)
-    if not events:
+    if kind == "all":
+        # В общем списке повторяющееся событие показываем один раз, ближайшим повторением
+        events = await repo.list_events(session, user_id, start=start, end=end)
+        items = [(event.starts_at, event) for event in events]
+    else:
+        items = await repo.list_occurrences(session, user_id, start, end, user.timezone)
+    if not items:
         text, markup = EMPTY[kind], None
     else:
-        text, buttons, pages = render_list(events, kind, page, user.timezone, now)
+        text, buttons, pages = render_list(items, kind, page, user.timezone, now)
         page = min(page, pages - 1)
         markup = list_kb(buttons, kind, page, pages)
     if edit:

@@ -1,10 +1,11 @@
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db import Event, EventStatus, User
-from bot.timeutils import REPEATS, next_occurrence
+from bot.timeutils import REPEATS, next_occurrence, occurrences
 
 
 async def get_or_create_user(session: AsyncSession, user_id: int, default_tz: str) -> User:
@@ -52,6 +53,7 @@ async def add_event(
         starts_at=starts_at,
         remind_before_min=remind_before_min,
         repeat=repeat,
+        repeat_anchor=starts_at,
         remind_at=starts_at - timedelta(minutes=remind_before_min),
     )
     session.add(event)
@@ -86,6 +88,32 @@ async def list_events(
     return list(result)
 
 
+async def list_occurrences(
+    session: AsyncSession, user_id: int, start: datetime, end: datetime, tz: str
+) -> list[tuple[datetime, Event]]:
+    """Активные события в интервале [start, end) с каждым повторением отдельно.
+
+    Возвращает пары (время повторения, событие) по возрастанию времени. Разовое событие
+    даёт одну пару, «каждый день» на неделе — семь.
+    """
+    query = select(Event).where(
+        Event.user_id == user_id,
+        Event.status == EventStatus.ACTIVE,
+        Event.starts_at < end,
+        or_(Event.starts_at >= start, Event.repeat.is_not(None)),
+    )
+    items = []
+    for event in await session.scalars(query):
+        if event.repeat is None:
+            items.append((event.starts_at, event))
+            continue
+        anchor = event.repeat_anchor or event.starts_at
+        for when in occurrences(anchor, event.repeat, tz, start, end):
+            items.append((when.astimezone(UTC), event))
+    items.sort(key=lambda item: (item[0], item[1].id))
+    return items
+
+
 async def update_event(
     session: AsyncSession,
     user_id: int,
@@ -102,6 +130,7 @@ async def update_event(
         event.title = title
     if starts_at is not None:
         event.starts_at = starts_at
+        event.repeat_anchor = starts_at
     if remind_before_min is not None:
         event.remind_before_min = remind_before_min
     if starts_at is not None or remind_before_min is not None:
@@ -153,6 +182,8 @@ async def set_repeat(
     if event is None:
         return None
     event.repeat = repeat
+    if event.repeat_anchor is None:
+        event.repeat_anchor = event.starts_at
     await session.commit()
     return event
 
@@ -176,7 +207,9 @@ async def roll_recurring(session: AsyncSession, now: datetime) -> list[Event]:
     )
     rolled = []
     for event, tz in (await session.execute(query)).all():
-        event.starts_at = next_occurrence(event.starts_at, event.repeat, tz, now)
+        anchor = event.repeat_anchor or event.starts_at
+        day = anchor.astimezone(ZoneInfo(tz)).day
+        event.starts_at = next_occurrence(event.starts_at, event.repeat, tz, now, day=day)
         event.remind_at = event.starts_at - timedelta(minutes=event.remind_before_min)
         rolled.append(event)
     if rolled:

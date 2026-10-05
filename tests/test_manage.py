@@ -81,7 +81,9 @@ def test_format_day():
 def test_render_list_groups_by_day():
     now = datetime(2026, 10, 5, 6, 0, tzinfo=UTC)  # 09:00 по Москве
     events = [ev(1, "Врач", 1, now), ev(2, "Кино", 10, now), ev(3, "Обед", 27, now)]
-    text, buttons, pages = manage.render_list(events, "week", 0, TZ, now)
+    text, buttons, pages = manage.render_list(
+        [(e.starts_at, e) for e in events], "week", 0, TZ, now
+    )
     assert pages == 1
     assert "Сегодня, пн, 5 октября\n1. 10:00 Врач\n2. 19:00 Кино" in text
     assert "Завтра, вт, 6 октября\n3. 12:00 Обед" in text
@@ -91,7 +93,7 @@ def test_render_list_groups_by_day():
 def test_render_list_paginates():
     now = datetime(2026, 10, 5, 6, 0, tzinfo=UTC)
     events = [ev(i, f"E{i}", i, now) for i in range(1, 24)]
-    text, buttons, pages = manage.render_list(events, "all", 2, TZ, now)
+    text, buttons, pages = manage.render_list([(e.starts_at, e) for e in events], "all", 2, TZ, now)
     assert pages == 3
     assert "стр. 3 из 3" in text
     assert [b[1] for b in buttons] == [21, 22, 23]
