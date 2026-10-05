@@ -1,6 +1,7 @@
 from aiogram.filters.callback_data import CallbackData
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from bot.categories import CATEGORIES
 from bot.formatting import format_remind
 
 REMIND_OPTIONS = [0, 15, 60, 1440]
@@ -56,10 +57,12 @@ def reminder_kb(event_id: int):
 class ListCb(CallbackData, prefix="lst"):
     kind: str  # today | week | all
     page: int
+    cat: str = ""  # фильтр по категории ("" — все)
 
 
 class EventCb(CallbackData, prefix="ev"):
-    action: str  # show | title | time | remind | delete | delete_yes | delete_no
+    # show | title | time | remind | repeat | category | delete | delete_yes | delete_no
+    action: str
     event_id: int
 
 
@@ -68,24 +71,48 @@ class RepeatCb(CallbackData, prefix="rep"):
     value: str  # none | daily | weekdays | weekly | monthly
 
 
+class CategoryCb(CallbackData, prefix="cat"):
+    event_id: int
+    value: str  # none | ключ категории
+
+
 class EditRemindCb(CallbackData, prefix="erem"):
     event_id: int
     minutes: int
 
 
-def list_kb(buttons: list[tuple[str, int]], kind: str, page: int, pages: int):
-    """Кнопка на каждое событие страницы и ◀️ ▶️ для листания."""
+def list_kb(
+    buttons: list[tuple[str, int]], kind: str, page: int, pages: int,
+    cats: list[str] = (), cat: str = "",
+):  # fmt: skip
+    """Кнопка на каждое событие страницы, ◀️ ▶️ для листания и фильтр по категориям.
+
+    cats — категории, которые есть в списке; фильтр показываем, если их хотя бы две
+    (или если фильтр уже включён, чтобы его можно было снять).
+    """
     kb = InlineKeyboardBuilder()
     for text, event_id in buttons:
         kb.button(text=text, callback_data=EventCb(action="show", event_id=event_id))
-    nav = []
+    rows = [1] * len(buttons)
+    nav = 0
     if page > 0:
-        kb.button(text="◀️", callback_data=ListCb(kind=kind, page=page - 1))
-        nav.append(1)
+        kb.button(text="◀️", callback_data=ListCb(kind=kind, page=page - 1, cat=cat))
+        nav += 1
     if page < pages - 1:
-        kb.button(text="▶️", callback_data=ListCb(kind=kind, page=page + 1))
-        nav.append(1)
-    kb.adjust(*([1] * len(buttons)), len(nav) or 1)
+        kb.button(text="▶️", callback_data=ListCb(kind=kind, page=page + 1, cat=cat))
+        nav += 1
+    if nav:
+        rows.append(nav)
+    if len(cats) > 1 or cat:
+        kb.button(text="✓ Все" if not cat else "Все", callback_data=ListCb(kind=kind, page=0))
+        for key in cats:
+            mark = CATEGORIES[key][0]
+            kb.button(
+                text=f"✓ {mark}" if key == cat else mark,
+                callback_data=ListCb(kind=kind, page=0, cat=key),
+            )
+        rows.append(len(cats) + 1)
+    kb.adjust(*rows)
     return kb.as_markup()
 
 
@@ -95,8 +122,9 @@ def event_kb(event_id: int):
     kb.button(text="🕒 Время", callback_data=EventCb(action="time", event_id=event_id))
     kb.button(text="⏰ Напоминание", callback_data=EventCb(action="remind", event_id=event_id))
     kb.button(text="🔁 Повтор", callback_data=EventCb(action="repeat", event_id=event_id))
+    kb.button(text="🏷 Категория", callback_data=EventCb(action="category", event_id=event_id))
     kb.button(text="🗑 Удалить", callback_data=EventCb(action="delete", event_id=event_id))
-    kb.adjust(2, 2, 1)
+    kb.adjust(2, 2, 2)
     return kb.as_markup()
 
 
@@ -192,4 +220,13 @@ def repeat_kb(event_id: int):
     ]:  # fmt: skip
         kb.button(text=label, callback_data=RepeatCb(event_id=event_id, value=value))
     kb.adjust(1, 2, 2)
+    return kb.as_markup()
+
+
+def category_kb(event_id: int):
+    kb = InlineKeyboardBuilder()
+    for key, (mark, name) in CATEGORIES.items():
+        kb.button(text=f"{mark} {name}", callback_data=CategoryCb(event_id=event_id, value=key))
+    kb.button(text="Без категории", callback_data=CategoryCb(event_id=event_id, value="none"))
+    kb.adjust(2, 2, 2, 1)
     return kb.as_markup()

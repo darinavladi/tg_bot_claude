@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.categories import CATEGORIES
 from bot.db import Event, EventStatus, User
 from bot.timeutils import REPEATS, next_occurrence, occurrences
 
@@ -46,6 +47,7 @@ async def add_event(
     starts_at: datetime,
     remind_before_min: int = 15,
     repeat: str | None = None,
+    category: str | None = None,
 ) -> Event:
     event = Event(
         user_id=user_id,
@@ -54,6 +56,7 @@ async def add_event(
         remind_before_min=remind_before_min,
         repeat=repeat,
         repeat_anchor=starts_at,
+        category=category,
         remind_at=starts_at - timedelta(minutes=remind_before_min),
     )
     session.add(event)
@@ -184,6 +187,19 @@ async def set_repeat(
     event.repeat = repeat
     if event.repeat_anchor is None:
         event.repeat_anchor = event.starts_at
+    await session.commit()
+    return event
+
+
+async def set_category(
+    session: AsyncSession, user_id: int, event_id: int, category: str | None
+) -> Event | None:
+    if category is not None and category not in CATEGORIES:
+        raise ValueError(category)
+    event = await get_event(session, user_id, event_id)
+    if event is None:
+        return None
+    event.category = category
     await session.commit()
     return event
 

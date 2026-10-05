@@ -82,6 +82,8 @@ class Event(Base):
     repeat: Mapped[str | None] = mapped_column(String(10), nullable=True)
     # Первое повторение серии: от него считаются все остальные (и число месяца)
     repeat_anchor: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    # Категория: work | home | health | study | people | fun (None — без категории)
+    category: Mapped[str | None] = mapped_column(String(10), nullable=True)
     # Когда прислать следующее напоминание (None — ничего не запланировано)
     remind_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
@@ -114,6 +116,8 @@ def _migrate(conn: Connection) -> None:
         conn.execute(text("ALTER TABLE events ADD COLUMN repeat VARCHAR(10)"))
     if "repeat_anchor" not in columns:
         conn.execute(text("ALTER TABLE events ADD COLUMN repeat_anchor DATETIME"))
+    if "category" not in columns:
+        conn.execute(text("ALTER TABLE events ADD COLUMN category VARCHAR(10)"))
 
     user_columns = {c["name"] for c in inspect(conn).get_columns("users")}
     if "default_remind_min" not in user_columns:

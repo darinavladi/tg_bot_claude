@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 from dateparser.search import search_dates
 
+from bot import categories
 from bot.timeutils import next_occurrence
 
 _PUNCT = " \t\n,.;:-—–"
@@ -79,6 +80,7 @@ class ParsedEvent:
     title: str
     starts_at: datetime  # с часовым поясом пользователя
     repeat: str | None = None  # daily | weekdays | weekly | monthly
+    category: str | None = None  # ключ из bot.categories.CATEGORIES
 
 
 class ParseError(ValueError):
@@ -226,7 +228,8 @@ def parse_event(text: str, tz_name: str, now: datetime | None = None) -> ParsedE
     """
     tz = ZoneInfo(tz_name)
     now = (now or datetime.now(tz)).astimezone(tz)
-    repeat, text = _find_repeat(text.strip())
+    category, text = categories.extract_hashtag(text.strip())
+    repeat, text = _find_repeat(text)
     starts_at, rest = _extract(text, tz, now)
     if repeat == "weekdays":
         while starts_at.weekday() >= 5:
@@ -241,7 +244,7 @@ def parse_event(text: str, tz_name: str, now: datetime | None = None) -> ParsedE
     title = _clean_title(rest)
     if not title:
         raise ParseError("Не вижу названия события. Напишите, что запланировано.")
-    return ParsedEvent(title, starts_at, repeat)
+    return ParsedEvent(title, starts_at, repeat, category or categories.guess(title))
 
 
 def _find_repeat(text: str) -> tuple[str | None, str]:

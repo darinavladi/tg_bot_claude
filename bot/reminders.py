@@ -16,6 +16,7 @@ from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from bot import repo
+from bot.categories import with_emoji
 from bot.db import Event, EventStatus
 from bot.formatting import format_day, format_dt
 from bot.keyboards import reminder_kb
@@ -51,11 +52,12 @@ def _humanize(delta: timedelta) -> str:
 def reminder_text(event: Event, tz: str, now: datetime) -> str:
     left = event.starts_at - now
     when = format_dt(event.starts_at, tz, now)
+    title = with_emoji(event.title, getattr(event, "category", None))
     if left > timedelta(minutes=1):
-        return f"⏰ Через {_humanize(left)}: {event.title}\n🕒 {when}"
+        return f"⏰ Через {_humanize(left)}: {title}\n🕒 {when}"
     if left > -timedelta(minutes=5):
-        return f"⏰ Сейчас: {event.title}\n🕒 {when}"
-    return f"⏰ Пропущенное напоминание: {event.title}\n🕒 Было {when}"
+        return f"⏰ Сейчас: {title}\n🕒 {when}"
+    return f"⏰ Пропущенное напоминание: {title}\n🕒 Было {when}"
 
 
 def summary_text(items: list[tuple[datetime, Event]], tz: str, now: datetime) -> str:
@@ -63,7 +65,10 @@ def summary_text(items: list[tuple[datetime, Event]], tz: str, now: datetime) ->
     if not items:
         return f"☀️ Доброе утро! {day}\n\nНа сегодня ничего не запланировано."
     zone = ZoneInfo(tz)
-    lines = [f"{when.astimezone(zone):%H:%M} {event.title}" for when, event in items]
+    lines = [
+        f"{when.astimezone(zone):%H:%M} {with_emoji(e.title, getattr(e, 'category', None))}"
+        for when, e in items
+    ]
     return f"☀️ Доброе утро! {day}\n\nПлан на сегодня:\n" + "\n".join(lines)
 
 

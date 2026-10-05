@@ -11,15 +11,17 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot import repo
+from bot import categories, repo
 from bot.config import Config
 from bot.db import Event, EventStatus
 from bot.formatting import format_day, format_dt, format_remind, format_repeat
 from bot.keyboards import (
+    CategoryCb,
     EditRemindCb,
     EventCb,
     ListCb,
     RepeatCb,
+    category_kb,
     delete_confirm_kb,
     edit_remind_kb,
     event_kb,
@@ -51,8 +53,9 @@ class EditEvent(StatesGroup):
 
 
 def render_list(
-    items: list[tuple[datetime, Event]], kind: str, page: int, tz: str, now: datetime
-) -> tuple[str, list[tuple[str, int]], int]:
+    items: list[tuple[datetime, Event]], kind: str, page: int, tz: str, now: datetime,
+    cat: str = "",
+) -> tuple[str, list[tuple[str, int]], int]:  # fmt: skip
     """Текст страницы (с группировкой по дням), кнопки событий и число страниц.
 
     items — пары (время, событие): повторяющееся событие может встречаться несколько раз.
@@ -62,6 +65,8 @@ def render_list(
     chunk = items[page * PAGE_SIZE : (page + 1) * PAGE_SIZE]
 
     header = TITLES[kind]
+    if cat:
+        header += f" · {categories.label(cat)}"
     if pages > 1:
         header += f" (стр. {page + 1} из {pages})"
     lines = [f"📋 {header}"]
@@ -76,15 +81,16 @@ def render_list(
         mark = " ✓" if when < now else ""
         if getattr(event, "repeat", None):
             mark += " 🔁"
-        lines.append(f"{n}. {local:%H:%M} {event.title}{mark}")
-        buttons.append((f"{n}. {local:%H:%M} {event.title}"[:60], event.id))
+        title = categories.with_emoji(event.title, getattr(event, "category", None))
+        lines.append(f"{n}. {local:%H:%M} {title}{mark}")
+        buttons.append((f"{n}. {local:%H:%M} {title}"[:60], event.id))
     lines.append("\nНажмите на событие, чтобы изменить или удалить его.")
     return "\n".join(lines), buttons, pages
 
 
 async def _show_list(
     target: Message, kind: str, page: int, user_id: int, session: AsyncSession, config: Config,
-    edit: bool = False,
+    edit: bool = False, cat: str = "",
 ) -> None:  # fmt: skip
     user = await repo.get_or_create_user(session, user_id, config.default_tz)
     now = datetime.now(UTC)
@@ -95,12 +101,18 @@ async def _show_list(
         items = [(event.starts_at, event) for event in events]
     else:
         items = await repo.list_occurrences(session, user_id, start, end, user.timezone)
+    present = {event.category for _, event in items}
+    cats = [key for key in categories.CATEGORIES if key in present]
+    if cat not in cats:
+        cat = ""  # в этой категории больше ничего нет — показываем всё
+    if cat:
+        items = [(when, event) for when, event in items if event.category == cat]
     if not items:
         text, markup = EMPTY[kind], None
     else:
-        text, buttons, pages = render_list(items, kind, page, user.timezone, now)
+        text, buttons, pages = render_list(items, kind, page, user.timezone, now, cat)
         page = min(page, pages - 1)
-        markup = list_kb(buttons, kind, page, pages)
+        markup = list_kb(buttons, kind, page, pages, cats, cat)
     if edit:
         await target.edit_text(text, reply_markup=markup)
     else:
@@ -128,7 +140,7 @@ async def list_page(
 ) -> None:
     await _show_list(
         callback.message, callback_data.kind, callback_data.page, callback.from_user.id,
-        session, config, edit=True,
+        session, config, edit=True, cat=callback_data.cat,
     )  # fmt: skip
     await callback.answer()
 
@@ -141,6 +153,8 @@ def card_text(event: Event, tz: str) -> str:
     if event.repeat:
         text += f"🔁 {format_repeat(event.repeat, event.starts_at, tz).capitalize()}\n"
     text += f"⏰ Напоминание {format_remind(event.remind_before_min)}"
+    if event.category:
+        text += f"\n🏷 {categories.label(event.category)}"
     if event.status == EventStatus.DONE:
         text += "\n✅ Выполнено"
     return text
@@ -354,5 +368,37 @@ async def event_repeat_set(
     event = await repo.set_repeat(session, callback.from_user.id, event.id, repeat)
     await callback.message.edit_text(
         card_text(event, tz) + "\n\n✅ Повтор изменён", reply_markup=event_kb(event.id)
+    )
+    await callback.answer()
+
+
+# ---------- Категория ----------
+
+
+@router.callback_query(EventCb.filter(F.action == "category"))
+async def event_category(
+    callback: CallbackQuery, callback_data: EventCb, session: AsyncSession, config: Config
+) -> None:
+    event, tz = await _load(callback, callback_data.event_id, session, config)
+    if event is None:
+        return
+    await callback.message.edit_text(
+        card_text(event, tz) + "\n\nВыберите категорию:", reply_markup=category_kb(event.id)
+    )
+    await callback.answer()
+
+
+@router.callback_query(CategoryCb.filter())
+async def event_category_set(
+    callback: CallbackQuery, callback_data: CategoryCb, session: AsyncSession, config: Config
+) -> None:
+    event, tz = await _load(callback, callback_data.event_id, session, config)
+    if event is None:
+        return
+    value = callback_data.value
+    category = value if value in categories.CATEGORIES else None
+    event = await repo.set_category(session, callback.from_user.id, event.id, category)
+    await callback.message.edit_text(
+        card_text(event, tz) + "\n\n✅ Категория изменена", reply_markup=event_kb(event.id)
     )
     await callback.answer()

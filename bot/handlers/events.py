@@ -7,7 +7,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot import repo
+from bot import categories, repo
 from bot.config import Config
 from bot.formatting import format_dt, format_remind, format_repeat
 from bot.keyboards import ConfirmCb, RemindCb, confirm_kb, remind_kb
@@ -39,12 +39,16 @@ async def _user_tz(session: AsyncSession, message: Message, config: Config) -> s
 
 
 def _summary(
-    title: str, starts_at: datetime, remind: int, tz: str, repeat: str | None = None
-) -> str:
+    title: str, starts_at: datetime, remind: int, tz: str, repeat: str | None = None,
+    category: str | None = None,
+) -> str:  # fmt: skip
     text = f"📅 {title}\n🕒 {format_dt(starts_at, tz)}\n"
     if repeat:
         text += f"🔁 {format_repeat(repeat, starts_at, tz).capitalize()}\n"
-    return text + f"⏰ Напомню {format_remind(remind)}"
+    text += f"⏰ Напомню {format_remind(remind)}"
+    if category:
+        text += f"\n🏷 {categories.label(category)}"
+    return text
 
 
 # ---------- Отмена из любого шага ----------
@@ -71,11 +75,12 @@ async def cmd_add(message: Message, state: FSMContext) -> None:
 
 @router.message(AddEvent.title, F.text)
 async def add_title(message: Message, state: FSMContext) -> None:
-    title = message.text.strip()
+    category, title = categories.detect(message.text.strip())
+    title = " ".join(title.split())
     if not title or title.startswith("/"):
         await message.answer("Напишите название текстом, например: «Встреча с Аней».")
         return
-    await state.update_data(title=title[:500])
+    await state.update_data(title=title[:500], category=category)
     await state.set_state(AddEvent.when)
     await message.answer("Когда? Например: «15.10 18:30» или «завтра в 9».")
 
@@ -111,14 +116,14 @@ async def add_remind(
     await state.clear()
     user = await repo.get_or_create_user(session, callback.from_user.id, config.default_tz)
     starts_at = datetime.fromisoformat(data["starts_at"])
-    repeat = data.get("repeat")
+    repeat, category = data.get("repeat"), data.get("category")
     event = await repo.add_event(
-        session, user.id, data["title"], starts_at, callback_data.minutes, repeat
+        session, user.id, data["title"], starts_at, callback_data.minutes, repeat, category
     )
     reminders.schedule(event.id, event.remind_at)
     await callback.message.edit_text(
         "✅ Сохранено\n\n"
-        + _summary(data["title"], starts_at, callback_data.minutes, user.timezone, repeat)
+        + _summary(data["title"], starts_at, callback_data.minutes, user.timezone, repeat, category)
     )
     await callback.answer()
 
@@ -143,9 +148,11 @@ async def quick_add(
         starts_at=parsed.starts_at.isoformat(),
         remind=remind,
         repeat=parsed.repeat,
+        category=parsed.category,
     )
     await message.answer(
-        _summary(parsed.title, parsed.starts_at, remind, tz, parsed.repeat) + "\n\nСохранить?",
+        _summary(parsed.title, parsed.starts_at, remind, tz, parsed.repeat, parsed.category)
+        + "\n\nСохранить?",
         reply_markup=confirm_kb(),
     )
 
@@ -162,12 +169,14 @@ async def confirm_save(
     await state.clear()
     user = await repo.get_or_create_user(session, callback.from_user.id, config.default_tz)
     starts_at = datetime.fromisoformat(data["starts_at"])
-    repeat = data.get("repeat")
-    event = await repo.add_event(session, user.id, data["title"], starts_at, data["remind"], repeat)
+    repeat, category = data.get("repeat"), data.get("category")
+    event = await repo.add_event(
+        session, user.id, data["title"], starts_at, data["remind"], repeat, category
+    )
     reminders.schedule(event.id, event.remind_at)
     await callback.message.edit_text(
         "✅ Сохранено\n\n"
-        + _summary(data["title"], starts_at, data["remind"], user.timezone, repeat)
+        + _summary(data["title"], starts_at, data["remind"], user.timezone, repeat, category)
     )
     await callback.answer()
 
