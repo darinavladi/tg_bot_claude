@@ -78,6 +78,8 @@ class Event(Base):
         Enum(EventStatus, values_callable=lambda e: [m.value for m in e]),
         default=EventStatus.ACTIVE,
     )
+    # Повтор: daily | weekdays | weekly | monthly (None — разовое событие)
+    repeat: Mapped[str | None] = mapped_column(String(10), nullable=True)
     # Когда прислать следующее напоминание (None — ничего не запланировано)
     remind_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
@@ -105,6 +107,9 @@ def _migrate(conn: Connection) -> None:
             ),
             {"now": utcnow().replace(tzinfo=None)},
         )
+
+    if "repeat" not in columns:
+        conn.execute(text("ALTER TABLE events ADD COLUMN repeat VARCHAR(10)"))
 
     user_columns = {c["name"] for c in inspect(conn).get_columns("users")}
     if "default_remind_min" not in user_columns:

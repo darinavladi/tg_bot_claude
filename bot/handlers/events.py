@@ -9,9 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot import repo
 from bot.config import Config
-from bot.formatting import format_dt, format_remind
+from bot.formatting import format_dt, format_remind, format_repeat
 from bot.keyboards import ConfirmCb, RemindCb, confirm_kb, remind_kb
-from bot.parser import ParseError, parse_datetime, parse_event
+from bot.parser import ParseError, parse_event, parse_when
 from bot.reminders import Reminders
 
 router = Router(name="events")
@@ -21,7 +21,8 @@ EXAMPLES = (
     "• 15.10 18:30 Встреча с Аней\n"
     "• завтра в 9 стоматолог\n"
     "• в пятницу в 7 вечера кино\n"
-    "• через 2 часа позвонить маме"
+    "• через 2 часа позвонить маме\n"
+    "• каждый понедельник в 10 планёрка"
 )
 
 
@@ -37,8 +38,13 @@ async def _user_tz(session: AsyncSession, message: Message, config: Config) -> s
     return user.timezone
 
 
-def _summary(title: str, starts_at: datetime, remind: int, tz: str) -> str:
-    return f"📅 {title}\n🕒 {format_dt(starts_at, tz)}\n⏰ Напомню {format_remind(remind)}"
+def _summary(
+    title: str, starts_at: datetime, remind: int, tz: str, repeat: str | None = None
+) -> str:
+    text = f"📅 {title}\n🕒 {format_dt(starts_at, tz)}\n"
+    if repeat:
+        text += f"🔁 {format_repeat(repeat, starts_at, tz).capitalize()}\n"
+    return text + f"⏰ Напомню {format_remind(remind)}"
 
 
 # ---------- Отмена из любого шага ----------
@@ -80,15 +86,16 @@ async def add_when(
 ) -> None:
     tz = await _user_tz(session, message, config)
     try:
-        starts_at = parse_datetime(message.text, tz)
+        starts_at, repeat = parse_when(message.text, tz)
     except ParseError as e:
         await message.answer(f"{e}\nПопробуйте ещё раз, например: «15.10 18:30» или «завтра в 9».")
         return
-    await state.update_data(starts_at=starts_at.isoformat())
+    await state.update_data(starts_at=starts_at.isoformat(), repeat=repeat)
     await state.set_state(AddEvent.remind)
-    await message.answer(
-        f"🕒 {format_dt(starts_at, tz)}\nКогда напомнить?", reply_markup=remind_kb()
-    )
+    when = f"🕒 {format_dt(starts_at, tz)}"
+    if repeat:
+        when += f"\n🔁 {format_repeat(repeat, starts_at, tz).capitalize()}"
+    await message.answer(f"{when}\nКогда напомнить?", reply_markup=remind_kb())
 
 
 @router.callback_query(AddEvent.remind, RemindCb.filter())
@@ -104,11 +111,14 @@ async def add_remind(
     await state.clear()
     user = await repo.get_or_create_user(session, callback.from_user.id, config.default_tz)
     starts_at = datetime.fromisoformat(data["starts_at"])
-    event = await repo.add_event(session, user.id, data["title"], starts_at, callback_data.minutes)
+    repeat = data.get("repeat")
+    event = await repo.add_event(
+        session, user.id, data["title"], starts_at, callback_data.minutes, repeat
+    )
     reminders.schedule(event.id, event.remind_at)
     await callback.message.edit_text(
         "✅ Сохранено\n\n"
-        + _summary(data["title"], starts_at, callback_data.minutes, user.timezone)
+        + _summary(data["title"], starts_at, callback_data.minutes, user.timezone, repeat)
     )
     await callback.answer()
 
@@ -132,9 +142,10 @@ async def quick_add(
         title=parsed.title[:500],
         starts_at=parsed.starts_at.isoformat(),
         remind=remind,
+        repeat=parsed.repeat,
     )
     await message.answer(
-        _summary(parsed.title, parsed.starts_at, remind, tz) + "\n\nСохранить?",
+        _summary(parsed.title, parsed.starts_at, remind, tz, parsed.repeat) + "\n\nСохранить?",
         reply_markup=confirm_kb(),
     )
 
@@ -151,10 +162,12 @@ async def confirm_save(
     await state.clear()
     user = await repo.get_or_create_user(session, callback.from_user.id, config.default_tz)
     starts_at = datetime.fromisoformat(data["starts_at"])
-    event = await repo.add_event(session, user.id, data["title"], starts_at, data["remind"])
+    repeat = data.get("repeat")
+    event = await repo.add_event(session, user.id, data["title"], starts_at, data["remind"], repeat)
     reminders.schedule(event.id, event.remind_at)
     await callback.message.edit_text(
-        "✅ Сохранено\n\n" + _summary(data["title"], starts_at, data["remind"], user.timezone)
+        "✅ Сохранено\n\n"
+        + _summary(data["title"], starts_at, data["remind"], user.timezone, repeat)
     )
     await callback.answer()
 

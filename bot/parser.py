@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo
 
 from dateparser.search import search_dates
 
+from bot.timeutils import next_occurrence
+
 _PUNCT = " \t\n,.;:-—–"
 _PERIOD = r"(?:\s*(?P<p{n}>утра|дня|вечера|ночи))?"
 
@@ -55,10 +57,28 @@ _WEEKDAY = re.compile(
 _WEEKDAYS = ["понедельник", "вторник", "сред", "четверг", "пятниц", "суббот", "воскресенье"]
 
 
+# Повторы: «каждый день», «по будням», «каждый понедельник», «еженедельно», «каждый месяц»
+_REPEATS = [
+    (re.compile(r"\bпо\s+будням\b|\bкаждый\s+будний\s+день\b", re.I), "weekdays", ""),
+    (re.compile(r"\bкажд(?:ый|ое)\s+день\b|\bежедневно\b", re.I), "daily", ""),
+    (
+        re.compile(
+            r"\bкажд(?:ый|ую|ое)\s+(понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье)\b",
+            re.I,
+        ),
+        "weekly",
+        r"в \1",
+    ),
+    (re.compile(r"\bеженедельно\b|\bкаждую\s+неделю\b", re.I), "weekly", ""),
+    (re.compile(r"\bежемесячно\b|\bкаждый\s+месяц\b", re.I), "monthly", ""),
+]
+
+
 @dataclass(frozen=True)
 class ParsedEvent:
     title: str
     starts_at: datetime  # с часовым поясом пользователя
+    repeat: str | None = None  # daily | weekdays | weekly | monthly
 
 
 class ParseError(ValueError):
@@ -206,7 +226,14 @@ def parse_event(text: str, tz_name: str, now: datetime | None = None) -> ParsedE
     """
     tz = ZoneInfo(tz_name)
     now = (now or datetime.now(tz)).astimezone(tz)
-    starts_at, rest = _extract(text.strip(), tz, now)
+    repeat, text = _find_repeat(text.strip())
+    starts_at, rest = _extract(text, tz, now)
+    if repeat == "weekdays":
+        while starts_at.weekday() >= 5:
+            starts_at += timedelta(days=1)
+    if repeat and starts_at <= now:
+        # «каждый день в 8», а 8:00 уже прошло — значит, со следующего раза
+        starts_at = next_occurrence(starts_at, repeat, tz_name, now)
     if starts_at <= now:
         raise ParseError("Это время уже прошло. Укажите время в будущем.")
     if starts_at > now + timedelta(days=366 * 5):
@@ -214,9 +241,21 @@ def parse_event(text: str, tz_name: str, now: datetime | None = None) -> ParsedE
     title = _clean_title(rest)
     if not title:
         raise ParseError("Не вижу названия события. Напишите, что запланировано.")
-    return ParsedEvent(title, starts_at)
+    return ParsedEvent(title, starts_at, repeat)
+
+
+def _find_repeat(text: str) -> tuple[str | None, str]:
+    for pattern, repeat, replacement in _REPEATS:
+        if pattern.search(text):
+            return repeat, pattern.sub(replacement, text, count=1)
+    return None, text
+
+
+def parse_when(text: str, tz_name: str, now: datetime | None = None) -> tuple[datetime, str | None]:
+    """Разбирает только дату/время и повтор (когда название уже известно)."""
+    parsed = parse_event(f"{text} __event__", tz_name, now)
+    return parsed.starts_at, parsed.repeat
 
 
 def parse_datetime(text: str, tz_name: str, now: datetime | None = None) -> datetime:
-    """Разбирает только дату и время (для пошагового /add, где название уже известно)."""
-    return parse_event(f"{text} __event__", tz_name, now).starts_at
+    return parse_when(text, tz_name, now)[0]

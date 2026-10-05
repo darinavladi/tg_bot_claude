@@ -1,9 +1,10 @@
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db import Event, EventStatus, User
+from bot.timeutils import REPEATS, next_occurrence
 
 
 async def get_or_create_user(session: AsyncSession, user_id: int, default_tz: str) -> User:
@@ -43,12 +44,14 @@ async def add_event(
     title: str,
     starts_at: datetime,
     remind_before_min: int = 15,
+    repeat: str | None = None,
 ) -> Event:
     event = Event(
         user_id=user_id,
         title=title,
         starts_at=starts_at,
         remind_before_min=remind_before_min,
+        repeat=repeat,
         remind_at=starts_at - timedelta(minutes=remind_before_min),
     )
     session.add(event)
@@ -139,3 +142,43 @@ async def list_pending_reminders(session: AsyncSession) -> list[Event]:
     """Все активные события, по которым ещё нужно прислать напоминание."""
     query = select(Event).where(Event.status == EventStatus.ACTIVE, Event.remind_at.is_not(None))
     return list(await session.scalars(query.order_by(Event.remind_at)))
+
+
+async def set_repeat(
+    session: AsyncSession, user_id: int, event_id: int, repeat: str | None
+) -> Event | None:
+    if repeat is not None and repeat not in REPEATS:
+        raise ValueError(repeat)
+    event = await get_event(session, user_id, event_id)
+    if event is None:
+        return None
+    event.repeat = repeat
+    await session.commit()
+    return event
+
+
+async def roll_recurring(session: AsyncSession, now: datetime) -> list[Event]:
+    """Переносит прошедшие повторяющиеся события на следующий раз.
+
+    Событие переносится, когда его время прошло больше минуты назад; напоминание
+    ставится заново по настройке события. Возвращает перенесённые события.
+    """
+    query = (
+        select(Event, User.timezone)
+        .join(User, User.id == Event.user_id)
+        .where(
+            Event.status == EventStatus.ACTIVE,
+            Event.repeat.is_not(None),
+            Event.starts_at < now - timedelta(minutes=1),
+            # Отложенное («💤») напоминание сначала должно прийти
+            or_(Event.remind_at.is_(None), Event.remind_at <= now),
+        )
+    )
+    rolled = []
+    for event, tz in (await session.execute(query)).all():
+        event.starts_at = next_occurrence(event.starts_at, event.repeat, tz, now)
+        event.remind_at = event.starts_at - timedelta(minutes=event.remind_before_min)
+        rolled.append(event)
+    if rolled:
+        await session.commit()
+    return rolled

@@ -14,17 +14,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot import repo
 from bot.config import Config
 from bot.db import Event, EventStatus
-from bot.formatting import format_day, format_dt, format_remind
+from bot.formatting import format_day, format_dt, format_remind, format_repeat
 from bot.keyboards import (
     EditRemindCb,
     EventCb,
     ListCb,
+    RepeatCb,
     delete_confirm_kb,
     edit_remind_kb,
     event_kb,
     list_kb,
+    repeat_kb,
 )
-from bot.parser import ParseError, parse_datetime
+from bot.parser import ParseError, parse_when
 from bot.reminders import Reminders
 from bot.timeutils import period_range
 
@@ -69,6 +71,8 @@ def render_list(
             current_day = local.date()
             lines.append(f"\n{format_day(event.starts_at, tz, now)}")
         mark = " ✓" if event.starts_at < now else ""
+        if getattr(event, "repeat", None):
+            mark += " 🔁"
         lines.append(f"{n}. {local:%H:%M} {event.title}{mark}")
         buttons.append((f"{n}. {local:%H:%M} {event.title}"[:60], event.id))
     lines.append("\nНажмите на событие, чтобы изменить или удалить его.")
@@ -126,6 +130,8 @@ async def list_page(
 
 def card_text(event: Event, tz: str) -> str:
     text = f"📅 {event.title}\n🕒 {format_dt(event.starts_at, tz)}\n"
+    if event.repeat:
+        text += f"🔁 {format_repeat(event.repeat, event.starts_at, tz).capitalize()}\n"
     text += f"⏰ Напоминание {format_remind(event.remind_before_min)}"
     if event.status == EventStatus.DONE:
         text += "\n✅ Выполнено"
@@ -295,7 +301,7 @@ async def event_edit_time(
 ) -> None:
     user = await repo.get_or_create_user(session, message.from_user.id, config.default_tz)
     try:
-        starts_at = parse_datetime(message.text, user.timezone)
+        starts_at, repeat = parse_when(message.text, user.timezone)
     except ParseError as e:
         await message.answer(f"{e}\nПопробуйте ещё раз, например: «15.10 18:30» или «завтра в 9».")
         return
@@ -305,7 +311,40 @@ async def event_edit_time(
     if event is None:
         await message.answer("Событие не найдено.")
         return
+    if repeat:
+        event = await repo.set_repeat(session, user.id, event.id, repeat)
     reminders.schedule(event.id, event.remind_at)
     await message.answer(
         "✅ Время изменено\n\n" + card_text(event, user.timezone), reply_markup=event_kb(event.id)
     )
+
+
+# ---------- Повтор ----------
+
+
+@router.callback_query(EventCb.filter(F.action == "repeat"))
+async def event_repeat(
+    callback: CallbackQuery, callback_data: EventCb, session: AsyncSession, config: Config
+) -> None:
+    event, tz = await _load(callback, callback_data.event_id, session, config)
+    if event is None:
+        return
+    await callback.message.edit_text(
+        card_text(event, tz) + "\n\nКак часто повторять?", reply_markup=repeat_kb(event.id)
+    )
+    await callback.answer()
+
+
+@router.callback_query(RepeatCb.filter())
+async def event_repeat_set(
+    callback: CallbackQuery, callback_data: RepeatCb, session: AsyncSession, config: Config
+) -> None:
+    event, tz = await _load(callback, callback_data.event_id, session, config)
+    if event is None:
+        return
+    repeat = None if callback_data.value == "none" else callback_data.value
+    event = await repo.set_repeat(session, callback.from_user.id, event.id, repeat)
+    await callback.message.edit_text(
+        card_text(event, tz) + "\n\n✅ Повтор изменён", reply_markup=event_kb(event.id)
+    )
+    await callback.answer()
