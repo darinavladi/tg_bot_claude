@@ -14,6 +14,7 @@ from bot.db import Event, EventStatus, init_db, make_engine, make_sessionmaker
 from bot.formatting import format_day
 from bot.handlers import manage
 from bot.keyboards import EditRemindCb, EventCb
+from bot.timeutils import period_range
 
 USER = 5
 TZ = "Europe/Moscow"
@@ -99,7 +100,7 @@ def test_render_list_paginates():
 
 def test_range_today_uses_user_timezone():
     now = datetime(2026, 10, 4, 22, 30, tzinfo=UTC)  # в Москве уже 5 октября, 01:30
-    start, end = manage._range("today", TZ, now)
+    start, end = period_range("today", TZ, now)
     assert start == datetime(2026, 10, 4, 21, 0, tzinfo=UTC)
     assert end == datetime(2026, 10, 5, 21, 0, tzinfo=UTC)
 

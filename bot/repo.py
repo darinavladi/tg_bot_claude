@@ -15,12 +15,26 @@ async def get_or_create_user(session: AsyncSession, user_id: int, default_tz: st
     return user
 
 
-async def set_timezone(session: AsyncSession, user_id: int, tz: str) -> None:
+async def update_user(session: AsyncSession, user_id: int, **fields) -> User:
+    """Меняет настройки пользователя: timezone, default_remind_min, summary_time."""
     user = await session.get(User, user_id)
     if user is None:
         raise LookupError(f"Пользователь {user_id} не найден")
-    user.timezone = tz
+    for name, value in fields.items():
+        if name not in ("timezone", "default_remind_min", "summary_time"):
+            raise AttributeError(name)
+        setattr(user, name, value)
     await session.commit()
+    return user
+
+
+async def set_timezone(session: AsyncSession, user_id: int, tz: str) -> None:
+    await update_user(session, user_id, timezone=tz)
+
+
+async def list_summary_users(session: AsyncSession) -> list[User]:
+    """Пользователи, у которых включена утренняя сводка."""
+    return list(await session.scalars(select(User).where(User.summary_time.is_not(None))))
 
 
 async def add_event(

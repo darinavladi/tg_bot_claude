@@ -59,6 +59,10 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)  # Telegram user id
     timezone: Mapped[str] = mapped_column(String(64))
+    # За сколько минут напоминать по умолчанию при быстром добавлении
+    default_remind_min: Mapped[int] = mapped_column(Integer, default=15, server_default="15")
+    # Время утренней сводки «ЧЧ:ММ» в поясе пользователя (None — выключена)
+    summary_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
@@ -101,6 +105,14 @@ def _migrate(conn: Connection) -> None:
             ),
             {"now": utcnow().replace(tzinfo=None)},
         )
+
+    user_columns = {c["name"] for c in inspect(conn).get_columns("users")}
+    if "default_remind_min" not in user_columns:
+        conn.execute(
+            text("ALTER TABLE users ADD COLUMN default_remind_min INTEGER NOT NULL DEFAULT 15")
+        )
+    if "summary_time" not in user_columns:
+        conn.execute(text("ALTER TABLE users ADD COLUMN summary_time VARCHAR(5)"))
 
 
 async def init_db(engine: AsyncEngine) -> None:

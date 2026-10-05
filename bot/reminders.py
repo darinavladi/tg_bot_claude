@@ -7,16 +7,19 @@
 
 import logging
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from bot import repo
 from bot.db import Event, EventStatus
-from bot.formatting import format_dt
+from bot.formatting import format_day, format_dt
 from bot.keyboards import reminder_kb
+from bot.timeutils import period_range
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +58,19 @@ def reminder_text(event: Event, tz: str, now: datetime) -> str:
     return f"⏰ Пропущенное напоминание: {event.title}\n🕒 Было {when}"
 
 
+def summary_text(events: list[Event], tz: str, now: datetime) -> str:
+    day = format_day(now, tz, now)
+    if not events:
+        return f"☀️ Доброе утро! {day}\n\nНа сегодня ничего не запланировано."
+    zone = ZoneInfo(tz)
+    lines = [f"{e.starts_at.astimezone(zone):%H:%M} {e.title}" for e in events]
+    return f"☀️ Доброе утро! {day}\n\nПлан на сегодня:\n" + "\n".join(lines)
+
+
+def _summary_job_id(user_id: int) -> str:
+    return f"summary:{user_id}"
+
+
 class Reminders:
     def __init__(self, bot: Bot, sessionmaker: async_sessionmaker, default_tz: str) -> None:
         self.bot = bot
@@ -67,9 +83,12 @@ class Reminders:
         self.scheduler.start()
         async with self.sessionmaker() as session:
             events = await repo.list_pending_reminders(session)
+            users = await repo.list_summary_users(session)
         for event in events:
             self.schedule(event.id, event.remind_at)
-        log.info("Восстановлено напоминаний: %d", len(events))
+        for user in users:
+            self.schedule_summary(user.id, user.summary_time, user.timezone)
+        log.info("Восстановлено напоминаний: %d, утренних сводок: %d", len(events), len(users))
 
     def shutdown(self) -> None:
         if self.scheduler.running:
@@ -116,3 +135,36 @@ class Reminders:
                 # Например, пользователь заблокировал бота — не пытаемся снова
                 log.exception("Не удалось отправить напоминание по событию %s", event_id)
             await repo.set_remind_at(session, event_id, None)
+
+    # ---------- Утренняя сводка ----------
+
+    def schedule_summary(self, user_id: int, summary_time: str | None, tz: str) -> None:
+        """Ежедневная сводка в summary_time («ЧЧ:ММ») по поясу пользователя; None — выключить."""
+        if summary_time is None:
+            job = self.scheduler.get_job(_summary_job_id(user_id))
+            if job is not None:
+                job.remove()
+            return
+        hour, minute = map(int, summary_time.split(":"))
+        self.scheduler.add_job(
+            self.send_summary,
+            CronTrigger(hour=hour, minute=minute, timezone=ZoneInfo(tz)),
+            args=[user_id],
+            id=_summary_job_id(user_id),
+            replace_existing=True,
+            misfire_grace_time=3600,
+            coalesce=True,
+        )
+
+    async def send_summary(self, user_id: int) -> None:
+        async with self.sessionmaker() as session:
+            user = await repo.get_or_create_user(session, user_id, self.default_tz)
+            if user.summary_time is None:
+                return
+            now = datetime.now(UTC)
+            start, end = period_range("today", user.timezone, now)
+            events = await repo.list_events(session, user_id, start=start, end=end)
+        try:
+            await self.bot.send_message(user_id, summary_text(events, user.timezone, now))
+        except TelegramAPIError:
+            log.exception("Не удалось отправить утреннюю сводку пользователю %s", user_id)

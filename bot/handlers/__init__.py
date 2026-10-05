@@ -1,11 +1,12 @@
 from aiogram import Router
 
-from bot.handlers import events, manage, reminders, start
+from bot.handlers import events, manage, reminders, settings, start
 
 
 def setup_routers() -> Router:
     router = Router()
     router.include_router(start.router)
+    router.include_router(settings.router)
     router.include_router(manage.router)
     router.include_router(events.router)
     router.include_router(reminders.router)

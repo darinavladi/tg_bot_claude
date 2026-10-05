@@ -110,3 +110,69 @@ def edit_remind_kb(event_id: int):
         )
     kb.adjust(2)
     return kb.as_markup()
+
+
+# ---------- Настройки ----------
+
+TIMEZONES = [
+    ("Калининград (UTC+2)", "Europe/Kaliningrad"),
+    ("Москва (UTC+3)", "Europe/Moscow"),
+    ("Самара (UTC+4)", "Europe/Samara"),
+    ("Екатеринбург (UTC+5)", "Asia/Yekaterinburg"),
+    ("Омск (UTC+6)", "Asia/Omsk"),
+    ("Новосибирск (UTC+7)", "Asia/Novosibirsk"),
+    ("Красноярск (UTC+7)", "Asia/Krasnoyarsk"),
+    ("Иркутск (UTC+8)", "Asia/Irkutsk"),
+    ("Якутск (UTC+9)", "Asia/Yakutsk"),
+    ("Владивосток (UTC+10)", "Asia/Vladivostok"),
+    ("Магадан (UTC+11)", "Asia/Magadan"),
+    ("Камчатка (UTC+12)", "Asia/Kamchatka"),
+]
+SUMMARY_TIMES = ["07:00", "08:00", "09:00", "10:00"]
+
+
+class SettingsCb(CallbackData, prefix="set"):
+    action: str  # menu | tz | tz_other | summary | summary_custom | remind
+    value: str = ""
+
+
+def settings_kb():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🌍 Часовой пояс", callback_data=SettingsCb(action="menu", value="tz"))
+    kb.button(text="☀️ Утренняя сводка", callback_data=SettingsCb(action="menu", value="summary"))
+    kb.button(
+        text="⏰ Напоминание по умолчанию", callback_data=SettingsCb(action="menu", value="remind")
+    )
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def timezone_kb():
+    kb = InlineKeyboardBuilder()
+    for label, tz in TIMEZONES:
+        kb.button(text=label, callback_data=SettingsCb(action="tz", value=tz))
+    kb.button(text="✏️ Другой", callback_data=SettingsCb(action="tz_other"))
+    kb.adjust(2)
+    return kb.as_markup()
+
+
+def summary_kb():
+    kb = InlineKeyboardBuilder()
+    for t in SUMMARY_TIMES:
+        # «:» — разделитель в callback_data, поэтому передаём время как «07.00»
+        kb.button(text=t, callback_data=SettingsCb(action="summary", value=t.replace(":", ".")))
+    kb.button(text="✏️ Своё время", callback_data=SettingsCb(action="summary_custom"))
+    kb.button(text="🚫 Выключить", callback_data=SettingsCb(action="summary", value="off"))
+    kb.adjust(4, 2)
+    return kb.as_markup()
+
+
+def default_remind_kb():
+    kb = InlineKeyboardBuilder()
+    for minutes in REMIND_OPTIONS:
+        kb.button(
+            text=format_remind(minutes).capitalize(),
+            callback_data=SettingsCb(action="remind", value=str(minutes)),
+        )
+    kb.adjust(2)
+    return kb.as_markup()
