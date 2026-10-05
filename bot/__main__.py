@@ -39,13 +39,14 @@ async def main() -> None:
     dp.update.middleware(DbSessionMiddleware(sessionmaker))
     dp.include_router(setup_routers())
 
-    await bot.set_my_commands(COMMANDS)
-    await bot.delete_webhook(drop_pending_updates=True)
-    await reminders.start()
     try:
+        await bot.set_my_commands(COMMANDS)
+        await bot.delete_webhook(drop_pending_updates=True)
+        await reminders.start()
         await dp.start_polling(bot)
     finally:
         reminders.shutdown()
+        await bot.session.close()
         await engine.dispose()
 
 

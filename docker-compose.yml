@@ -1,0 +1,15 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # База внутри контейнера; на сервере это папка ./data рядом с этим файлом
+      DATABASE_URL: sqlite+aiosqlite:////app/data/planner.db
+    volumes:
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

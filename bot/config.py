@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -21,3 +22,13 @@ def load_config() -> Config:
         default_tz=os.getenv("DEFAULT_TZ", "Europe/Moscow"),
         database_url=os.getenv("DATABASE_URL", "sqlite+aiosqlite:///planner.db"),
     )
+
+
+def load_db_path() -> Path:
+    """Путь к файлу SQLite из DATABASE_URL (для резервного копирования)."""
+    load_dotenv()
+    url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///planner.db")
+    prefix = "sqlite+aiosqlite:///"
+    if not url.startswith(prefix):
+        raise RuntimeError(f"Резервное копирование умеет только SQLite, а DATABASE_URL={url}")
+    return Path(url[len(prefix) :])

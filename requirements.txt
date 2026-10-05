@@ -4,3 +4,4 @@ sqlalchemy[asyncio]>=2.0
 aiosqlite>=0.20
 dateparser>=1.2
 apscheduler>=3.10,<4
+tzdata>=2024.1
