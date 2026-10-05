@@ -44,3 +44,26 @@ def format_day(dt: datetime, tz_name: str, now: datetime | None = None) -> str:
     if delta == 1:
         return f"Завтра, {base}"
     return base[:1].upper() + base[1:]
+
+
+_WEEKDAYS_ACC = [
+    "каждый понедельник", "каждый вторник", "каждую среду", "каждый четверг",
+    "каждую пятницу", "каждую субботу", "каждое воскресенье",
+]  # fmt: skip
+REPEAT_LABELS = {
+    None: "не повторять",
+    "daily": "каждый день",
+    "weekdays": "по будням",
+    "weekly": "каждую неделю",
+    "monthly": "каждый месяц",
+}
+
+
+def format_repeat(repeat: str | None, starts_at: datetime, tz_name: str) -> str:
+    """«каждый понедельник», «каждый месяц 15-го», «по будням»…"""
+    local = starts_at.astimezone(ZoneInfo(tz_name))
+    if repeat == "weekly":
+        return _WEEKDAYS_ACC[local.weekday()]
+    if repeat == "monthly":
+        return f"каждый месяц {local.day}-го"
+    return REPEAT_LABELS[repeat]

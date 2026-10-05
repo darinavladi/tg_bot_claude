@@ -81,6 +81,12 @@ class Reminders:
     async def start(self) -> None:
         """Запускает планировщик и ставит все напоминания, сохранённые в базе."""
         self.scheduler.start()
+        # Прошедшие повторяющиеся события сразу переносим на следующий раз,
+        # а дальше проверяем раз в минуту
+        await self.roll_recurring()
+        self.scheduler.add_job(
+            self.roll_recurring, "interval", minutes=1, id="roll_recurring", replace_existing=True
+        )
         async with self.sessionmaker() as session:
             events = await repo.list_pending_reminders(session)
             users = await repo.list_summary_users(session)
@@ -122,10 +128,20 @@ class Reminders:
         self.schedule(event_id, remind_at)
         return remind_at
 
+    async def roll_recurring(self) -> None:
+        async with self.sessionmaker() as session:
+            rolled = await repo.roll_recurring(session, datetime.now(UTC))
+        for event in rolled:
+            self.schedule(event.id, event.remind_at)
+
     async def send(self, event_id: int) -> None:
         async with self.sessionmaker() as session:
             event = await session.get(Event, event_id)
             if event is None or event.status != EventStatus.ACTIVE or event.remind_at is None:
+                return
+            if event.remind_at > datetime.now(UTC) + timedelta(seconds=5):
+                # Время напоминания успели перенести (например, повтор) — ждём нового срока
+                self.schedule(event.id, event.remind_at)
                 return
             user = await repo.get_or_create_user(session, event.user_id, self.default_tz)
             text = reminder_text(event, user.timezone, datetime.now(UTC))

@@ -16,11 +16,14 @@ router = Router(name="reminders")
 async def reminder_done(
     callback: CallbackQuery, callback_data: ReminderCb, session: AsyncSession, reminders: Reminders
 ) -> None:
-    ok = await repo.mark_done(session, callback.from_user.id, callback_data.event_id)
-    if not ok:
+    event = await repo.get_event(session, callback.from_user.id, callback_data.event_id)
+    if event is None:
         await callback.answer("Событие не найдено.", show_alert=True)
         return
-    reminders.cancel(callback_data.event_id)
+    if event.repeat is None:
+        # Повторяющееся событие не закрываем: оно перенесётся на следующий раз само
+        await repo.mark_done(session, callback.from_user.id, event.id)
+        reminders.cancel(event.id)
     await callback.message.edit_text(f"{callback.message.text}\n\n✅ Готово")
     await callback.answer("Отмечено")
 

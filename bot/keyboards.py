@@ -63,6 +63,11 @@ class EventCb(CallbackData, prefix="ev"):
     event_id: int
 
 
+class RepeatCb(CallbackData, prefix="rep"):
+    event_id: int
+    value: str  # none | daily | weekdays | weekly | monthly
+
+
 class EditRemindCb(CallbackData, prefix="erem"):
     event_id: int
     minutes: int
@@ -89,8 +94,9 @@ def event_kb(event_id: int):
     kb.button(text="✏️ Название", callback_data=EventCb(action="title", event_id=event_id))
     kb.button(text="🕒 Время", callback_data=EventCb(action="time", event_id=event_id))
     kb.button(text="⏰ Напоминание", callback_data=EventCb(action="remind", event_id=event_id))
+    kb.button(text="🔁 Повтор", callback_data=EventCb(action="repeat", event_id=event_id))
     kb.button(text="🗑 Удалить", callback_data=EventCb(action="delete", event_id=event_id))
-    kb.adjust(2, 2)
+    kb.adjust(2, 2, 1)
     return kb.as_markup()
 
 
@@ -175,4 +181,15 @@ def default_remind_kb():
             callback_data=SettingsCb(action="remind", value=str(minutes)),
         )
     kb.adjust(2)
+    return kb.as_markup()
+
+
+def repeat_kb(event_id: int):
+    kb = InlineKeyboardBuilder()
+    for value, label in [
+        ("none", "Не повторять"), ("daily", "Каждый день"), ("weekdays", "По будням"),
+        ("weekly", "Каждую неделю"), ("monthly", "Каждый месяц"),
+    ]:  # fmt: skip
+        kb.button(text=label, callback_data=RepeatCb(event_id=event_id, value=value))
+    kb.adjust(1, 2, 2)
     return kb.as_markup()

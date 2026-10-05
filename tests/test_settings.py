@@ -212,6 +212,7 @@ def test_all_keyboards_pack():
         k.settings_kb(), k.timezone_kb(), k.summary_kb(), k.default_remind_kb(),
         k.confirm_kb(), k.remind_kb(), k.reminder_kb(1), k.event_kb(1),
         k.delete_confirm_kb(1), k.edit_remind_kb(1), k.list_kb([("a", 1)], "all", 1, 3),
+        k.repeat_kb(1),
     ]:  # fmt: skip
         for row in markup.inline_keyboard:
             for button in row:
