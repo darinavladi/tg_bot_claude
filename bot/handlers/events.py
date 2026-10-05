@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from aiogram import F, Router
 from aiogram.filters import Command, StateFilter
@@ -170,21 +170,3 @@ async def confirm_cancel(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(RemindCb.filter())
 async def stale_button(callback: CallbackQuery) -> None:
     await callback.answer("Эта кнопка уже не действует.", show_alert=True)
-
-
-# ---------- Простой список (полноценное управление — на этапе 6) ----------
-
-
-@router.message(Command("list"))
-async def cmd_list(message: Message, session: AsyncSession, config: Config) -> None:
-    tz = await _user_tz(session, message, config)
-    now = datetime.now().astimezone()
-    events = await repo.list_events(
-        session, message.from_user.id, start=now, end=now + timedelta(days=366)
-    )
-    if not events:
-        await message.answer("Запланированных событий нет.\n\n" + EXAMPLES)
-        return
-    lines = [f"• {format_dt(e.starts_at, tz)} — {e.title}" for e in events[:30]]
-    more = f"\n…и ещё {len(events) - 30}" if len(events) > 30 else ""
-    await message.answer("Ближайшие события:\n\n" + "\n".join(lines) + more)

@@ -28,3 +28,19 @@ def format_remind(minutes: int) -> str:
     if minutes % 60 == 0:
         return f"за {minutes // 60} ч"
     return f"за {minutes} мин"
+
+
+def format_day(dt: datetime, tz_name: str, now: datetime | None = None) -> str:
+    """Заголовок дня: «Сегодня, пн 5 октября», «Завтра, вт 6 октября», «Чт, 15 октября»."""
+    tz = ZoneInfo(tz_name)
+    local = dt.astimezone(tz).date()
+    today = (now or datetime.now(tz)).astimezone(tz).date()
+    base = f"{_WEEKDAYS[local.weekday()]}, {local.day} {_MONTHS[local.month - 1]}"
+    if local.year != today.year:
+        base += f" {local.year}"
+    delta = (local - today).days
+    if delta == 0:
+        return f"Сегодня, {base}"
+    if delta == 1:
+        return f"Завтра, {base}"
+    return base[:1].upper() + base[1:]
