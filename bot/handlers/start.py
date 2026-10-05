@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot import repo
 from bot.config import Config
+from bot.handlers.settings import tz_label
 
 router = Router(name="start")
 
@@ -20,6 +21,7 @@ HELP_TEXT = (
     "/today — события на сегодня\n"
     "/week — на 7 дней\n"
     "/list — все запланированные\n"
+    "/settings — часовой пояс, утренняя сводка, напоминания\n"
     "/cancel — отменить ввод\n"
     "/help — помощь"
 )
@@ -27,10 +29,12 @@ HELP_TEXT = (
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, session: AsyncSession, config: Config) -> None:
-    if message.from_user:
-        await repo.get_or_create_user(session, message.from_user.id, config.default_tz)
-    name = message.from_user.first_name if message.from_user else "друг"
-    await message.answer(f"Привет, {name}! 👋\n\n{HELP_TEXT}")
+    user = await repo.get_or_create_user(session, message.from_user.id, config.default_tz)
+    name = message.from_user.first_name
+    await message.answer(
+        f"Привет, {name}! 👋\n\n{HELP_TEXT}\n\n"
+        f"🌍 Время показываю по поясу {tz_label(user.timezone)}. Изменить: /settings"
+    )
 
 
 @router.message(Command("help"))

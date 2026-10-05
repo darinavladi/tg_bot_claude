@@ -16,7 +16,6 @@ from bot.reminders import Reminders
 
 router = Router(name="events")
 
-DEFAULT_REMIND_MIN = 15
 EXAMPLES = (
     "Примеры:\n"
     "• 15.10 18:30 Встреча с Аней\n"
@@ -121,7 +120,8 @@ async def add_remind(
 async def quick_add(
     message: Message, state: FSMContext, session: AsyncSession, config: Config
 ) -> None:
-    tz = await _user_tz(session, message, config)
+    user = await repo.get_or_create_user(session, message.from_user.id, config.default_tz)
+    tz, remind = user.timezone, user.default_remind_min
     try:
         parsed = parse_event(message.text, tz)
     except ParseError as e:
@@ -131,10 +131,10 @@ async def quick_add(
     await state.update_data(
         title=parsed.title[:500],
         starts_at=parsed.starts_at.isoformat(),
-        remind=DEFAULT_REMIND_MIN,
+        remind=remind,
     )
     await message.answer(
-        _summary(parsed.title, parsed.starts_at, DEFAULT_REMIND_MIN, tz) + "\n\nСохранить?",
+        _summary(parsed.title, parsed.starts_at, remind, tz) + "\n\nСохранить?",
         reply_markup=confirm_kb(),
     )
 

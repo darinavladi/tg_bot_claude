@@ -62,7 +62,7 @@ async def test_quick_add_and_save(session, state):
 
     saved = await repo.list_events(session, USER)
     assert [e.title for e in saved] == ["Встреча с Аней"]
-    assert saved[0].remind_before_min == events.DEFAULT_REMIND_MIN
+    assert saved[0].remind_before_min == 15
 
 
 async def test_quick_add_cancel_saves_nothing(session, state):
@@ -106,3 +106,13 @@ async def test_cancel_clears_state(state):
     await events.cmd_cancel(m, state)
     assert await state.get_state() is None
     assert m.answer.call_args.args[0] == "Отменено."
+
+
+async def test_quick_add_uses_user_default_remind(session, state):
+    await repo.get_or_create_user(session, USER, "Europe/Moscow")
+    await repo.update_user(session, USER, default_remind_min=60)
+    m = msg(f"{future_text()} Кино")
+    await events.quick_add(m, state, session, CONFIG)
+    assert "за 1 ч" in m.answer.call_args.args[0]
+    await events.confirm_save(callback(), state, session, CONFIG, REMINDERS)
+    assert (await repo.list_events(session, USER))[0].remind_before_min == 60

@@ -16,6 +16,7 @@ COMMANDS = [
     BotCommand(command="today", description="События на сегодня"),
     BotCommand(command="week", description="События на 7 дней"),
     BotCommand(command="list", description="Все запланированные события"),
+    BotCommand(command="settings", description="Настройки"),
     BotCommand(command="cancel", description="Отменить ввод"),
     BotCommand(command="help", description="Помощь"),
 ]

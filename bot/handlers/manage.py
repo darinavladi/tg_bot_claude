@@ -1,6 +1,6 @@
 """Просмотр расписания (/today, /week, /list) и управление событием: изменить, удалить."""
 
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, datetime
 from math import ceil
 from zoneinfo import ZoneInfo
 
@@ -26,6 +26,7 @@ from bot.keyboards import (
 )
 from bot.parser import ParseError, parse_datetime
 from bot.reminders import Reminders
+from bot.timeutils import period_range
 
 router = Router(name="manage")
 
@@ -45,17 +46,6 @@ EMPTY = {
 class EditEvent(StatesGroup):
     title = State()
     time = State()
-
-
-def _range(kind: str, tz: str, now: datetime) -> tuple[datetime, datetime]:
-    """Интервал [start, end) в UTC для списка нужного вида."""
-    local_now = now.astimezone(ZoneInfo(tz))
-    day_start = datetime.combine(local_now.date(), time(), tzinfo=ZoneInfo(tz))
-    if kind == "today":
-        return day_start.astimezone(UTC), (day_start + timedelta(days=1)).astimezone(UTC)
-    if kind == "week":
-        return day_start.astimezone(UTC), (day_start + timedelta(days=7)).astimezone(UTC)
-    return now.astimezone(UTC), now.astimezone(UTC) + timedelta(days=366 * 5)
 
 
 def render_list(
@@ -91,7 +81,7 @@ async def _show_list(
 ) -> None:  # fmt: skip
     user = await repo.get_or_create_user(session, user_id, config.default_tz)
     now = datetime.now(UTC)
-    start, end = _range(kind, user.timezone, now)
+    start, end = period_range(kind, user.timezone, now)
     events = await repo.list_events(session, user_id, start=start, end=end)
     if not events:
         text, markup = EMPTY[kind], None
