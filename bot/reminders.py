@@ -16,8 +16,9 @@ from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from bot import repo
+from bot.categories import with_category
 from bot.db import Event, EventStatus
-from bot.formatting import format_day, format_dt
+from bot.formatting import format_day, format_hours, format_span
 from bot.keyboards import reminder_kb
 from bot.timeutils import period_range
 
@@ -48,22 +49,30 @@ def _humanize(delta: timedelta) -> str:
     return f"{days} {_plural(days, 'день', 'дня', 'дней')}"
 
 
-def reminder_text(event: Event, tz: str, now: datetime) -> str:
+def reminder_text(event: Event, tz: str, now: datetime, category: str | None = None) -> str:
     left = event.starts_at - now
-    when = format_dt(event.starts_at, tz, now)
+    when = format_span(event.starts_at, getattr(event, "ends_at", None), tz, now)
+    title = with_category(event.title, category)
     if left > timedelta(minutes=1):
-        return f"⏰ Через {_humanize(left)}: {event.title}\n🕒 {when}"
+        return f"⏰ Через {_humanize(left)}: {title}\n🕒 {when}"
     if left > -timedelta(minutes=5):
-        return f"⏰ Сейчас: {event.title}\n🕒 {when}"
-    return f"⏰ Пропущенное напоминание: {event.title}\n🕒 Было {when}"
+        return f"⏰ Сейчас: {title}\n🕒 {when}"
+    return f"⏰ Пропущенное напоминание: {title}\n🕒 Было {when}"
 
 
-def summary_text(events: list[Event], tz: str, now: datetime) -> str:
+def summary_text(
+    items: list[tuple[datetime, Event]], tz: str, now: datetime,
+    names: dict[int, str] | None = None,
+) -> str:  # fmt: skip
     day = format_day(now, tz, now)
-    if not events:
+    if not items:
         return f"☀️ Доброе утро! {day}\n\nНа сегодня ничего не запланировано."
-    zone = ZoneInfo(tz)
-    lines = [f"{e.starts_at.astimezone(zone):%H:%M} {e.title}" for e in events]
+    lines = []
+    for when, e in items:
+        ends_at = getattr(e, "ends_at", None)
+        hours = format_hours(when, ends_at and when + (ends_at - e.starts_at), tz)
+        category = (names or {}).get(getattr(e, "category_id", None))
+        lines.append(f"{hours} {with_category(e.title, category)}")
     return f"☀️ Доброе утро! {day}\n\nПлан на сегодня:\n" + "\n".join(lines)
 
 
@@ -144,7 +153,10 @@ class Reminders:
                 self.schedule(event.id, event.remind_at)
                 return
             user = await repo.get_or_create_user(session, event.user_id, self.default_tz)
-            text = reminder_text(event, user.timezone, datetime.now(UTC))
+            names = await repo.category_names(session, event.user_id)
+            text = reminder_text(
+                event, user.timezone, datetime.now(UTC), names.get(event.category_id)
+            )
             try:
                 await self.bot.send_message(event.user_id, text, reply_markup=reminder_kb(event.id))
             except TelegramAPIError:
@@ -179,8 +191,9 @@ class Reminders:
                 return
             now = datetime.now(UTC)
             start, end = period_range("today", user.timezone, now)
-            events = await repo.list_events(session, user_id, start=start, end=end)
+            items = await repo.list_occurrences(session, user_id, start, end, user.timezone)
+            names = await repo.category_names(session, user_id)
         try:
-            await self.bot.send_message(user_id, summary_text(events, user.timezone, now))
+            await self.bot.send_message(user_id, summary_text(items, user.timezone, now, names))
         except TelegramAPIError:
             log.exception("Не удалось отправить утреннюю сводку пользователю %s", user_id)

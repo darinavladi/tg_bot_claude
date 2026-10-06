@@ -12,6 +12,7 @@ from bot.reminders import Reminders
 router = Router(name="reminders")
 
 
+# Кнопка «Готово» была у напоминаний до появления /done; оставлена для старых сообщений
 @router.callback_query(ReminderCb.filter(F.action == "done"))
 async def reminder_done(
     callback: CallbackQuery, callback_data: ReminderCb, session: AsyncSession, reminders: Reminders

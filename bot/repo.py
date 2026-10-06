@@ -1,10 +1,13 @@
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.db import Event, EventStatus, User
-from bot.timeutils import REPEATS, next_occurrence
+from bot.db import DEFAULT_CATEGORIES, Category, Event, EventStatus, User
+from bot.timeutils import is_repeat, next_occurrence, occurrences
+
+_KEEP = object()  # «не менять» для необязательных аргументов, где None — тоже значение
 
 
 async def get_or_create_user(session: AsyncSession, user_id: int, default_tz: str) -> User:
@@ -45,13 +48,18 @@ async def add_event(
     starts_at: datetime,
     remind_before_min: int = 15,
     repeat: str | None = None,
+    category_id: int | None = None,
+    ends_at: datetime | None = None,
 ) -> Event:
     event = Event(
         user_id=user_id,
         title=title,
         starts_at=starts_at,
+        ends_at=ends_at,
         remind_before_min=remind_before_min,
         repeat=repeat,
+        repeat_anchor=starts_at,
+        category_id=category_id,
         remind_at=starts_at - timedelta(minutes=remind_before_min),
     )
     session.add(event)
@@ -86,6 +94,32 @@ async def list_events(
     return list(result)
 
 
+async def list_occurrences(
+    session: AsyncSession, user_id: int, start: datetime, end: datetime, tz: str
+) -> list[tuple[datetime, Event]]:
+    """Активные события в интервале [start, end) с каждым повторением отдельно.
+
+    Возвращает пары (время повторения, событие) по возрастанию времени. Разовое событие
+    даёт одну пару, «каждый день» на неделе — семь.
+    """
+    query = select(Event).where(
+        Event.user_id == user_id,
+        Event.status == EventStatus.ACTIVE,
+        Event.starts_at < end,
+        or_(Event.starts_at >= start, Event.repeat.is_not(None)),
+    )
+    items = []
+    for event in await session.scalars(query):
+        if event.repeat is None:
+            items.append((event.starts_at, event))
+            continue
+        anchor = event.repeat_anchor or event.starts_at
+        for when in occurrences(anchor, event.repeat, tz, start, end):
+            items.append((when.astimezone(UTC), event))
+    items.sort(key=lambda item: (item[0], item[1].id))
+    return items
+
+
 async def update_event(
     session: AsyncSession,
     user_id: int,
@@ -93,15 +127,20 @@ async def update_event(
     *,
     title: str | None = None,
     starts_at: datetime | None = None,
+    ends_at=_KEEP,
     remind_before_min: int | None = None,
 ) -> Event | None:
+    """Меняет поля события. ends_at=None убирает конец промежутка."""
     event = await get_event(session, user_id, event_id)
     if event is None:
         return None
     if title is not None:
         event.title = title
+    if ends_at is not _KEEP:
+        event.ends_at = ends_at
     if starts_at is not None:
         event.starts_at = starts_at
+        event.repeat_anchor = starts_at
     if remind_before_min is not None:
         event.remind_before_min = remind_before_min
     if starts_at is not None or remind_before_min is not None:
@@ -147,21 +186,123 @@ async def list_pending_reminders(session: AsyncSession) -> list[Event]:
 async def set_repeat(
     session: AsyncSession, user_id: int, event_id: int, repeat: str | None
 ) -> Event | None:
-    if repeat is not None and repeat not in REPEATS:
+    if repeat is not None and not is_repeat(repeat):
         raise ValueError(repeat)
     event = await get_event(session, user_id, event_id)
     if event is None:
         return None
     event.repeat = repeat
+    if event.repeat_anchor is None:
+        event.repeat_anchor = event.starts_at
     await session.commit()
     return event
+
+
+async def set_category(
+    session: AsyncSession, user_id: int, event_id: int, category_id: int | None
+) -> Event | None:
+    if category_id is not None and await get_category(session, user_id, category_id) is None:
+        raise ValueError(category_id)
+    event = await get_event(session, user_id, event_id)
+    if event is None:
+        return None
+    event.category_id = category_id
+    await session.commit()
+    return event
+
+
+def _shift(event: Event, starts_at: datetime) -> None:
+    """Переносит событие на новое время вместе с концом промежутка и напоминанием."""
+    if event.ends_at is not None:
+        event.ends_at = starts_at + (event.ends_at - event.starts_at)
+    event.starts_at = starts_at
+    event.remind_at = starts_at - timedelta(minutes=event.remind_before_min)
+
+
+async def list_due(session: AsyncSession, user_id: int, until: datetime) -> list[Event]:
+    """Активные события, которые начинаются раньше `until`: что можно отметить завершённым."""
+    query = select(Event).where(
+        Event.user_id == user_id, Event.status == EventStatus.ACTIVE, Event.starts_at < until
+    )
+    return list(await session.scalars(query.order_by(Event.starts_at)))
+
+
+async def complete(session: AsyncSession, user_id: int, event_id: int, tz: str) -> Event | None:
+    """Завершает событие. Разовое закрывается, повторяющееся переходит к следующему разу."""
+    event = await get_event(session, user_id, event_id)
+    if event is None or event.status != EventStatus.ACTIVE:
+        return None
+    if event.repeat is None:
+        event.status = EventStatus.DONE
+        event.remind_at = None
+    else:
+        anchor = event.repeat_anchor or event.starts_at
+        day = anchor.astimezone(ZoneInfo(tz)).day
+        _shift(event, next_occurrence(event.starts_at, event.repeat, tz, event.starts_at, day=day))
+    await session.commit()
+    return event
+
+
+# ---------- Категории ----------
+
+
+async def list_categories(session: AsyncSession, user_id: int) -> list[Category]:
+    """Категории пользователя по алфавиту. При первом обращении добавляет готовые."""
+    user = await session.get(User, user_id)
+    if user is not None and not user.categories_seeded:
+        existing = set(
+            await session.scalars(select(Category.name).where(Category.user_id == user_id))
+        )
+        for name in DEFAULT_CATEGORIES.values():
+            if name not in existing:
+                session.add(Category(user_id=user_id, name=name))
+        user.categories_seeded = True
+        await session.commit()
+    query = select(Category).where(Category.user_id == user_id).order_by(Category.id)
+    return list(await session.scalars(query))
+
+
+async def category_names(session: AsyncSession, user_id: int) -> dict[int, str]:
+    return {c.id: c.name for c in await list_categories(session, user_id)}
+
+
+async def get_category(session: AsyncSession, user_id: int, category_id: int) -> Category | None:
+    category = await session.get(Category, category_id)
+    if category is None or category.user_id != user_id:
+        return None
+    return category
+
+
+async def add_category(session: AsyncSession, user_id: int, name: str) -> Category:
+    """Создаёт категорию; если такая уже есть (без учёта регистра), возвращает её."""
+    for category in await list_categories(session, user_id):
+        if category.name.lower() == name.lower():
+            return category
+    category = Category(user_id=user_id, name=name)
+    session.add(category)
+    await session.commit()
+    return category
+
+
+async def delete_category(session: AsyncSession, user_id: int, category_id: int) -> bool:
+    """Удаляет категорию; её события остаются, но уже без категории."""
+    category = await get_category(session, user_id, category_id)
+    if category is None:
+        return False
+    events = await session.scalars(select(Event).where(Event.category_id == category_id))
+    for event in events:
+        event.category_id = None
+    await session.delete(category)
+    await session.commit()
+    return True
 
 
 async def roll_recurring(session: AsyncSession, now: datetime) -> list[Event]:
     """Переносит прошедшие повторяющиеся события на следующий раз.
 
-    Событие переносится, когда его время прошло больше минуты назад; напоминание
-    ставится заново по настройке события. Возвращает перенесённые события.
+    Событие переносится, когда оно закончилось (или началось, если конца нет) больше
+    минуты назад; напоминание ставится заново по настройке события. Возвращает
+    перенесённые события.
     """
     query = (
         select(Event, User.timezone)
@@ -169,15 +310,16 @@ async def roll_recurring(session: AsyncSession, now: datetime) -> list[Event]:
         .where(
             Event.status == EventStatus.ACTIVE,
             Event.repeat.is_not(None),
-            Event.starts_at < now - timedelta(minutes=1),
+            func.coalesce(Event.ends_at, Event.starts_at) < now - timedelta(minutes=1),
             # Отложенное («💤») напоминание сначала должно прийти
             or_(Event.remind_at.is_(None), Event.remind_at <= now),
         )
     )
     rolled = []
     for event, tz in (await session.execute(query)).all():
-        event.starts_at = next_occurrence(event.starts_at, event.repeat, tz, now)
-        event.remind_at = event.starts_at - timedelta(minutes=event.remind_before_min)
+        anchor = event.repeat_anchor or event.starts_at
+        day = anchor.astimezone(ZoneInfo(tz)).day
+        _shift(event, next_occurrence(event.starts_at, event.repeat, tz, now, day=day))
         rolled.append(event)
     if rolled:
         await session.commit()

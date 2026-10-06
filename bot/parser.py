@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 from dateparser.search import search_dates
 
-from bot.timeutils import next_occurrence
+from bot.timeutils import next_occurrence, repeat_code
 
 _PUNCT = " \t\n,.;:-—–"
 _PERIOD = r"(?:\s*(?P<p{n}>утра|дня|вечера|ночи))?"
@@ -57,28 +57,56 @@ _WEEKDAY = re.compile(
 _WEEKDAYS = ["понедельник", "вторник", "сред", "четверг", "пятниц", "суббот", "воскресенье"]
 
 
-# Повторы: «каждый день», «по будням», «каждый понедельник», «еженедельно», «каждый месяц»
+_N_UNIT = (
+    r"(?P<n>\d{1,3}|два|две|три|четыре|пять|шесть|семь|восемь|девять|десять)?\s*"
+    r"(?P<u>д(?:ень|ня|ней)|сут\w*|недел[юиь]\w*|месяц\w*)"
+)
+_WORD_NUMS = {
+    "два": 2, "две": 2, "три": 3, "четыре": 4, "пять": 5, "шесть": 6,
+    "семь": 7, "восемь": 8, "девять": 9, "десять": 10,
+}  # fmt: skip
+# Повторы: «каждый день», «по будням», «каждый понедельник», «раз в 2 недели», «каждые 3 дня»
 _REPEATS = [
-    (re.compile(r"\bпо\s+будням\b|\bкаждый\s+будний\s+день\b", re.I), "weekdays", ""),
-    (re.compile(r"\bкажд(?:ый|ое)\s+день\b|\bежедневно\b", re.I), "daily", ""),
+    (re.compile(r"\bпо\s+будням\b|\bкаждый\s+будний\s+день\b", re.I), "wd", ""),
+    (re.compile(r"\b(?:раз\s+в|кажд(?:ые|ый|ую|ое))\s+" + _N_UNIT + r"\b", re.I), None, ""),
+    (re.compile(r"\bежедневно\b", re.I), "1d", ""),
     (
         re.compile(
             r"\bкажд(?:ый|ую|ое)\s+(понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье)\b",
             re.I,
         ),
-        "weekly",
+        "1w",
         r"в \1",
     ),
-    (re.compile(r"\bеженедельно\b|\bкаждую\s+неделю\b", re.I), "weekly", ""),
-    (re.compile(r"\bежемесячно\b|\bкаждый\s+месяц\b", re.I), "monthly", ""),
+    (re.compile(r"\bеженедельно\b", re.I), "1w", ""),
+    (re.compile(r"\bежемесячно\b", re.I), "1m", ""),
 ]
+# Промежуток времени: «14:20–19:30», «с 14:20 до 19:30», «с 14 до 19», «с 9.30 до 11»
+_RANGE = re.compile(
+    r"(?:\bс\s*)?\b(?P<h1>\d{1,2}):(?P<m1>\d{2})\s*(?:-|–|—|до)\s*(?P<h2>\d{1,2})(?::(?P<m2>\d{2}))?\b"
+    r"|\bс\s*(?P<h3>\d{1,2})(?:[:.](?P<m3>\d{2}))?\s*(?:до|-|–|—)\s*(?P<h4>\d{1,2})(?:[:.](?P<m4>\d{2}))?\b",
+    re.IGNORECASE,
+)
+
+
+def _period_code(m: re.Match) -> str:
+    raw = (m["n"] or "1").lower()
+    n = _WORD_NUMS.get(raw) or int(raw)
+    unit = m["u"].lower()
+    unit = "d" if unit.startswith(("д", "сут")) else "w" if unit.startswith("недел") else "m"
+    try:
+        return repeat_code(n, unit)
+    except ValueError as e:
+        raise ParseError("Слишком большой период повтора.") from e
 
 
 @dataclass(frozen=True)
 class ParsedEvent:
     title: str
     starts_at: datetime  # с часовым поясом пользователя
-    repeat: str | None = None  # daily | weekdays | weekly | monthly
+    repeat: str | None = None  # код повтора, см. bot.timeutils («1d», «2w», «wd»…)
+    ends_at: datetime | None = None  # конец промежутка «14:20–19:30»
+    hashtag: str | None = None  # «#работа» из текста, без «#»
 
 
 class ParseError(ValueError):
@@ -226,9 +254,11 @@ def parse_event(text: str, tz_name: str, now: datetime | None = None) -> ParsedE
     """
     tz = ZoneInfo(tz_name)
     now = (now or datetime.now(tz)).astimezone(tz)
-    repeat, text = _find_repeat(text.strip())
+    hashtag, text = _find_hashtag(text.strip())
+    repeat, text = _find_repeat(text)
+    end_time, text = _find_range(text)
     starts_at, rest = _extract(text, tz, now)
-    if repeat == "weekdays":
+    if repeat == "wd":
         while starts_at.weekday() >= 5:
             starts_at += timedelta(days=1)
     if repeat and starts_at <= now:
@@ -238,24 +268,66 @@ def parse_event(text: str, tz_name: str, now: datetime | None = None) -> ParsedE
         raise ParseError("Это время уже прошло. Укажите время в будущем.")
     if starts_at > now + timedelta(days=366 * 5):
         raise ParseError("Слишком далёкая дата. Проверьте год.")
+    ends_at = None
+    if end_time is not None:
+        ends_at = datetime.combine(starts_at.date(), end_time, tzinfo=tz)
+        if ends_at <= starts_at:
+            ends_at += timedelta(days=1)  # «с 22 до 2» — заканчивается ночью
     title = _clean_title(rest)
     if not title:
         raise ParseError("Не вижу названия события. Напишите, что запланировано.")
-    return ParsedEvent(title, starts_at, repeat)
+    return ParsedEvent(title, starts_at, repeat, ends_at, hashtag)
+
+
+def _find_hashtag(text: str) -> tuple[str | None, str]:
+    m = re.search(r"(?<!\w)#(\w+)", text)
+    if not m:
+        return None, text
+    return m[1], _cut(text, m)
+
+
+def _find_range(text: str) -> tuple[time | None, str]:
+    """«с 14:20 до 19:30» → время конца 19:30, а в тексте остаётся «в 14:20»."""
+    m = _RANGE.search(text)
+    if not m:
+        return None, text
+    if m["h1"]:
+        h1, m1, h2, m2 = m["h1"], m["m1"], m["h2"], m["m2"]
+    else:
+        h1, m1, h2, m2 = m["h3"], m["m3"], m["h4"], m["m4"]
+    h1, m1, h2, m2 = int(h1), int(m1 or 0), int(h2), int(m2 or 0)
+    if max(h1, h2) > 23 or max(m1, m2) > 59:
+        raise ParseError("Такого времени не бывает. Проверьте числа.")
+    return time(h2, m2), text[: m.start()] + f" в {h1}:{m1:02d} " + text[m.end() :]
 
 
 def _find_repeat(text: str) -> tuple[str | None, str]:
     for pattern, repeat, replacement in _REPEATS:
-        if pattern.search(text):
-            return repeat, pattern.sub(replacement, text, count=1)
+        if m := pattern.search(text):
+            return repeat or _period_code(m), pattern.sub(replacement, text, count=1)
     return None, text
 
 
-def parse_when(text: str, tz_name: str, now: datetime | None = None) -> tuple[datetime, str | None]:
-    """Разбирает только дату/время и повтор (когда название уже известно)."""
-    parsed = parse_event(f"{text} __event__", tz_name, now)
-    return parsed.starts_at, parsed.repeat
+def parse_period(text: str) -> str:
+    """Период из ответа пользователя: «3 дня», «раз в 2 недели», «каждый месяц», «по будням»."""
+    text = text.strip().lower()
+    if text in ("день", "дня"):
+        text = "1 день"
+    repeat, rest = _find_repeat(text)
+    if repeat is None:
+        m = re.fullmatch(_N_UNIT, text)
+        if not m:
+            raise ParseError("Не понял период. Напишите, например: «3 дня», «2 недели», «месяц».")
+        return _period_code(m)
+    if rest.strip(_PUNCT):
+        raise ParseError("Не понял период. Напишите, например: «3 дня», «2 недели», «месяц».")
+    return repeat
+
+
+def parse_when(text: str, tz_name: str, now: datetime | None = None) -> ParsedEvent:
+    """Разбирает только дату/время (или промежуток) и повтор, когда название уже известно."""
+    return parse_event(f"{text} __event__", tz_name, now)
 
 
 def parse_datetime(text: str, tz_name: str, now: datetime | None = None) -> datetime:
-    return parse_when(text, tz_name, now)[0]
+    return parse_when(text, tz_name, now).starts_at

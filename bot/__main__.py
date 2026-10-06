@@ -16,6 +16,8 @@ COMMANDS = [
     BotCommand(command="today", description="События на сегодня"),
     BotCommand(command="week", description="События на 7 дней"),
     BotCommand(command="list", description="Все запланированные события"),
+    BotCommand(command="done", description="Завершить событие"),
+    BotCommand(command="categories", description="Мои категории"),
     BotCommand(command="settings", description="Настройки"),
     BotCommand(command="cancel", description="Отменить ввод"),
     BotCommand(command="help", description="Помощь"),
@@ -39,13 +41,14 @@ async def main() -> None:
     dp.update.middleware(DbSessionMiddleware(sessionmaker))
     dp.include_router(setup_routers())
 
-    await bot.set_my_commands(COMMANDS)
-    await bot.delete_webhook(drop_pending_updates=True)
-    await reminders.start()
     try:
+        await bot.set_my_commands(COMMANDS)
+        await bot.delete_webhook(drop_pending_updates=True)
+        await reminders.start()
         await dp.start_polling(bot)
     finally:
         reminders.shutdown()
+        await bot.session.close()
         await engine.dispose()
 
 
