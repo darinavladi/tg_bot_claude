@@ -11,7 +11,7 @@ from bot.middlewares import DbSessionMiddleware
 from bot.reminders import Reminders
 
 COMMANDS = [
-    BotCommand(command="start", description="Начать"),
+    BotCommand(command="menu", description="🏠 Главное меню с кнопками"),
     BotCommand(command="add", description="Добавить событие"),
     BotCommand(command="today", description="События на сегодня"),
     BotCommand(command="week", description="События на 7 дней"),
@@ -21,6 +21,7 @@ COMMANDS = [
     BotCommand(command="settings", description="Настройки"),
     BotCommand(command="cancel", description="Отменить ввод"),
     BotCommand(command="help", description="Помощь"),
+    BotCommand(command="start", description="Начать заново"),
 ]
 
 

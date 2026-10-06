@@ -421,3 +421,21 @@ def end_kb():
     kb.button(text="◀️ Другое время", callback_data=EndCb(minutes=-1))
     kb.adjust(1, 3, 2, 1)
     return kb.as_markup()
+
+
+# ---------- Главное меню в сообщении (кнопки внутри чата) ----------
+
+
+MENU_TEXT = "🏠 Главное меню\n\nЧто сделать?"
+
+
+class MenuCb(CallbackData, prefix="menu"):
+    action: str  # ключ из MENU
+
+
+def inline_menu():
+    kb = InlineKeyboardBuilder()
+    for key, label in MENU.items():
+        kb.button(text=label, callback_data=MenuCb(action=key))
+    kb.adjust(1, 2, 1, 2, 2)
+    return kb.as_markup()

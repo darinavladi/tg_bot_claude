@@ -166,3 +166,28 @@ async def test_menu_add(state):
     m = msg(MENU["add"])
     await menu.menu_add(m, state)
     assert await state.get_state() == events.AddEvent.title
+
+
+async def test_inline_menu(session, state):
+    from bot.keyboards import MenuCb, inline_menu
+
+    labels = [b.text for row in inline_menu().inline_keyboard for b in row]
+    assert labels == list(MENU.values())
+
+    m = msg("/menu")
+    await menu.cmd_menu(m, state)
+    assert "Главное меню" in m.answer.call_args.args[0]
+
+    for action, expected in [
+        ("today", "ничего"), ("week", "7 дней"), ("list", "событий нет"),
+        ("done", "нечего завершать"), ("categories", "Ваши категории"),
+        ("settings", "Настройки"), ("help", "бот-планировщик"),
+    ]:  # fmt: skip
+        c = SimpleNamespace(from_user=SimpleNamespace(id=USER), message=msg(""), answer=AsyncMock())
+        await menu.menu_button(c, MenuCb(action=action), state, session, CONFIG)
+        assert expected in c.message.answer.call_args.args[0], action
+        c.answer.assert_awaited()
+
+    c = SimpleNamespace(from_user=SimpleNamespace(id=USER), message=msg(""), answer=AsyncMock())
+    await menu.menu_button(c, MenuCb(action="add"), state, session, CONFIG)
+    assert await state.get_state() == events.AddEvent.title
