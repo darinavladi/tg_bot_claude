@@ -1,5 +1,8 @@
+import calendar
+from datetime import date, timedelta
+
 from aiogram.filters.callback_data import CallbackData
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 from bot.categories import NONE_LABEL
 from bot.formatting import format_remind
@@ -295,4 +298,126 @@ def category_delete_kb(category_id: int):
         text="🗑 Да, удалить", callback_data=CatManageCb(action="delete", category_id=category_id)
     )
     kb.button(text="Нет", callback_data=CatManageCb(action="back"))
+    return kb.as_markup()
+
+
+# ---------- Главное меню (кнопки под полем ввода) ----------
+
+MENU = {
+    "add": "➕ Добавить",
+    "today": "📅 Сегодня",
+    "week": "🗓 Неделя",
+    "list": "📋 Все события",
+    "done": "✅ Завершить",
+    "categories": "🏷 Категории",
+    "settings": "⚙️ Настройки",
+    "help": "❓ Помощь",
+}
+
+
+def main_menu():
+    kb = ReplyKeyboardBuilder()
+    for label in MENU.values():
+        kb.button(text=label)
+    kb.adjust(2)
+    return kb.as_markup(
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Например: завтра в 9 врач",
+    )
+
+
+# ---------- Выбор даты и времени кнопками ----------
+
+_MONTHS_NOM = [
+    "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+    "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
+]  # fmt: skip
+
+
+class CalCb(CallbackData, prefix="cal"):
+    action: str  # day | nav | noop
+    y: int = 0
+    m: int = 0
+    d: int = 0
+
+
+class TimeCb(CallbackData, prefix="tm"):
+    kind: str  # h — час, m — минуты, back — к календарю
+    v: int = 0
+
+
+class EndCb(CallbackData, prefix="end"):
+    minutes: int  # длительность; 0 — без окончания; -1 — назад к выбору времени
+
+
+def calendar_kb(year: int, month: int, today: date):
+    """Календарь на месяц: прошедшие дни недоступны, сегодня отмечено точкой."""
+    kb = InlineKeyboardBuilder()
+    noop = CalCb(action="noop")
+    kb.button(
+        text="Сегодня", callback_data=CalCb(action="day", y=today.year, m=today.month, d=today.day)
+    )
+    tomorrow = today + timedelta(days=1)
+    kb.button(
+        text="Завтра",
+        callback_data=CalCb(action="day", y=tomorrow.year, m=tomorrow.month, d=tomorrow.day),
+    )
+    prev_y, prev_m = (year - 1, 12) if month == 1 else (year, month - 1)
+    next_y, next_m = (year + 1, 1) if month == 12 else (year, month + 1)
+    can_go_back = (year, month) > (today.year, today.month)
+    kb.button(
+        text="◀️" if can_go_back else " ",
+        callback_data=CalCb(action="nav", y=prev_y, m=prev_m) if can_go_back else noop,
+    )
+    kb.button(text=f"{_MONTHS_NOM[month - 1]} {year}", callback_data=noop)
+    kb.button(text="▶️", callback_data=CalCb(action="nav", y=next_y, m=next_m))
+    for name in ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"):
+        kb.button(text=name, callback_data=noop)
+    weeks = calendar.Calendar().monthdayscalendar(year, month)
+    for week in weeks:
+        for day in week:
+            if day == 0:
+                kb.button(text=" ", callback_data=noop)
+                continue
+            d = date(year, month, day)
+            if d < today:
+                kb.button(text="·", callback_data=noop)
+            else:
+                text = f"•{day}•" if d == today else str(day)
+                kb.button(text=text, callback_data=CalCb(action="day", y=year, m=month, d=day))
+    kb.adjust(2, 3, 7, *([7] * len(weeks)))
+    return kb.as_markup()
+
+
+def hours_kb(min_hour: int = 0):
+    """Час начала. Для сегодняшнего дня прошедшие часы не показываем."""
+    kb = InlineKeyboardBuilder()
+    hours = [h for h in range(6, 24) if h >= min_hour] or list(range(min_hour, 24))
+    for hour in hours:
+        kb.button(text=f"{hour:02d}:00", callback_data=TimeCb(kind="h", v=hour))
+    kb.button(text="◀️ Другой день", callback_data=TimeCb(kind="back"))
+    kb.adjust(*([6] * (len(hours) // 6)), *([len(hours) % 6] if len(hours) % 6 else []), 1)
+    return kb.as_markup()
+
+
+def minutes_kb(hour: int):
+    kb = InlineKeyboardBuilder()
+    for minute in (0, 15, 30, 45):
+        kb.button(text=f"{hour:02d}:{minute:02d}", callback_data=TimeCb(kind="m", v=minute))
+    kb.button(text="◀️ Другой час", callback_data=TimeCb(kind="hours"))
+    kb.adjust(4, 1)
+    return kb.as_markup()
+
+
+END_OPTIONS = [(0, "Без окончания"), (30, "30 мин"), (60, "1 час"), (90, "1,5 часа"),
+               (120, "2 часа"), (180, "3 часа")]  # fmt: skip
+
+
+def end_kb():
+    kb = InlineKeyboardBuilder()
+    for minutes, label in END_OPTIONS:
+        kb.button(text=label, callback_data=EndCb(minutes=minutes))
+    kb.button(text="◀️ Другое время", callback_data=EndCb(minutes=-1))
+    kb.adjust(1, 3, 2, 1)
     return kb.as_markup()

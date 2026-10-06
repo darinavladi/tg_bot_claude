@@ -6,28 +6,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot import repo
 from bot.config import Config
 from bot.handlers.settings import tz_label
+from bot.keyboards import main_menu
 
 router = Router(name="start")
 
 HELP_TEXT = (
-    "Я бот-планировщик. Напишите мне событие с датой и временем, и я напомню о нём.\n\n"
-    "Например:\n"
-    "• 15.10 18:30 Встреча с Аней\n"
-    "• завтра 14:20–19:30 работа над проектом\n"
-    "• в пятницу в 7 вечера кино\n"
+    "Я бот-планировщик: запоминаю события и вовремя напоминаю о них.\n\n"
+    "➕ Нажмите «Добавить», и я спрошу по шагам: что за событие, когда, "
+    "повторять ли и к какой категории отнести.\n\n"
+    "✍️ Или напишите событие одной фразой:\n"
+    "• завтра в 9 стоматолог\n"
+    "• 15.10 14:20–19:30 работа над проектом\n"
     "• раз в 2 недели в субботу в 12 уборка #дом\n\n"
-    "Потом я спрошу, повторять ли событие и к какой категории его отнести. "
-    "Повтор можно выбрать кнопкой или написать свой: «раз в 3 дня».\n\n"
-    "Команды:\n"
-    "/add — добавить событие по шагам\n"
-    "/today — события на сегодня\n"
-    "/week — на 7 дней\n"
-    "/list — все запланированные\n"
-    "/done — отметить событие завершённым\n"
-    "/categories — мои категории\n"
-    "/settings — часовой пояс, утренняя сводка, напоминания\n"
-    "/cancel — отменить ввод\n"
-    "/help — помощь"
+    "Кнопки внизу экрана:\n"
+    "📅 Сегодня и 🗓 Неделя — расписание\n"
+    "📋 Все события — всё запланированное; нажмите на событие, чтобы изменить или удалить\n"
+    "✅ Завершить — отметить сделанное\n"
+    "🏷 Категории — свои категории событий\n"
+    "⚙️ Настройки — часовой пояс, утренняя сводка, напоминания\n\n"
+    "Передумали на середине — отправьте /cancel."
 )
 
 
@@ -36,11 +33,12 @@ async def cmd_start(message: Message, session: AsyncSession, config: Config) -> 
     user = await repo.get_or_create_user(session, message.from_user.id, config.default_tz)
     name = message.from_user.first_name
     await message.answer(
-        f"Привет, {name}! 👋\n\n{HELP_TEXT}\n\n"
-        f"🌍 Время показываю по поясу {tz_label(user.timezone)}. Изменить: /settings"
+        f"Привет, {name}! 👋 {HELP_TEXT}\n\n"
+        f"🌍 Время показываю по поясу {tz_label(user.timezone)}. Изменить: ⚙️ Настройки",
+        reply_markup=main_menu(),
     )
 
 
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
-    await message.answer(HELP_TEXT)
+    await message.answer(HELP_TEXT, reply_markup=main_menu())

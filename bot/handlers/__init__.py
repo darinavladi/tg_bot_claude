@@ -1,11 +1,12 @@
 from aiogram import Router
 
-from bot.handlers import categories, done, events, manage, reminders, settings, start
+from bot.handlers import categories, done, events, manage, menu, reminders, settings, start
 
 
 def setup_routers() -> Router:
     router = Router()
     router.include_router(start.router)
+    router.include_router(menu.router)  # раньше остальных: кнопка меню прерывает любой шаг
     router.include_router(settings.router)
     router.include_router(manage.router)
     router.include_router(categories.router)
