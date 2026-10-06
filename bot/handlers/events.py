@@ -50,6 +50,7 @@ EXAMPLES = (
     "• через 2 часа позвонить маме\n"
     "• раз в 2 недели в субботу в 12 уборка #дом"
 )
+TITLE_PROMPT = "✏️ Что за событие? Напишите название.\n(отменить: /cancel)"
 WHEN_HINT = "Например: «15.10 18:30», «завтра в 9» или промежуток «завтра 14:20–19:30»."
 PERIOD_HINT = "Напишите период, например: «3 дня», «2 недели», «раз в месяц»."
 CATEGORY_NAME_HINT = "Как назвать новую категорию? Можно начать с эмодзи, например: «🐶 Собака»."
@@ -157,7 +158,7 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
 async def cmd_add(message: Message, state: FSMContext) -> None:
     await state.clear()
     await state.set_state(AddEvent.title)
-    await message.answer("✏️ Что за событие? Напишите название.\n(отменить: /cancel)")
+    await message.answer(TITLE_PROMPT)
 
 
 WHEN_PROMPT = (

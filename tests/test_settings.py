@@ -217,6 +217,7 @@ def test_all_keyboards_pack():
         k.repeat_kb(1), k.category_kb(1, cats), k.add_repeat_kb(), k.add_category_kb(cats),
         k.done_kb([("10:00 Врач", 5)]), k.categories_kb(cats), k.category_delete_kb(333),
         k.calendar_kb(2026, 12, date(2026, 10, 6)), k.hours_kb(), k.minutes_kb(23), k.end_kb(),
+        k.inline_menu(),
     ]:  # fmt: skip
         for row in markup.inline_keyboard:
             for button in row:

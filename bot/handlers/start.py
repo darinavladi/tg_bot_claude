@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot import repo
 from bot.config import Config
 from bot.handlers.settings import tz_label
-from bot.keyboards import main_menu
+from bot.keyboards import MENU_TEXT, inline_menu, main_menu
 
 router = Router(name="start")
 
@@ -24,6 +24,7 @@ HELP_TEXT = (
     "✅ Завершить — отметить сделанное\n"
     "🏷 Категории — свои категории событий\n"
     "⚙️ Настройки — часовой пояс, утренняя сводка, напоминания\n\n"
+    "🏠 Главное меню с кнопками в сообщении — команда /menu.\n"
     "Передумали на середине — отправьте /cancel."
 )
 
@@ -37,6 +38,7 @@ async def cmd_start(message: Message, session: AsyncSession, config: Config) -> 
         f"🌍 Время показываю по поясу {tz_label(user.timezone)}. Изменить: ⚙️ Настройки",
         reply_markup=main_menu(),
     )
+    await message.answer(MENU_TEXT, reply_markup=inline_menu())
 
 
 @router.message(Command("help"))
