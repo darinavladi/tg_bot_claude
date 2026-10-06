@@ -1,5 +1,7 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+
+from bot.timeutils import split_repeat
 
 _WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
 _MONTHS = [
@@ -50,20 +52,65 @@ _WEEKDAYS_ACC = [
     "каждый понедельник", "каждый вторник", "каждую среду", "каждый четверг",
     "каждую пятницу", "каждую субботу", "каждое воскресенье",
 ]  # fmt: skip
-REPEAT_LABELS = {
-    None: "не повторять",
-    "daily": "каждый день",
-    "weekdays": "по будням",
-    "weekly": "каждую неделю",
-    "monthly": "каждый месяц",
-}
+_WEEKDAYS_PL = [
+    "по понедельникам", "по вторникам", "по средам", "по четвергам",
+    "по пятницам", "по субботам", "по воскресеньям",
+]  # fmt: skip
+_UNIT_FORMS = {"d": ("день", "дня", "дней"), "w": ("неделю", "недели", "недель"),
+               "m": ("месяц", "месяца", "месяцев")}  # fmt: skip
+
+
+def plural(n: int, forms: tuple[str, str, str]) -> str:
+    """plural(3, ("день", "дня", "дней")) → «дня»."""
+    if n % 10 == 1 and n % 100 != 11:
+        return forms[0]
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return forms[1]
+    return forms[2]
+
+
+def format_period(code: str) -> str:
+    """Период без привязки к дате: «каждый день», «раз в 3 дня», «по будням»."""
+    n, unit = split_repeat(code)
+    if unit == "wd":
+        return "по будням"
+    if n == 1:
+        return {"d": "каждый день", "w": "каждую неделю", "m": "каждый месяц"}[unit]
+    return f"раз в {n} {plural(n, _UNIT_FORMS[unit])}"
 
 
 def format_repeat(repeat: str | None, starts_at: datetime, tz_name: str) -> str:
-    """«каждый понедельник», «каждый месяц 15-го», «по будням»…"""
+    """«каждый понедельник», «раз в 2 недели, по средам», «каждый месяц 15-го»…"""
+    if repeat is None:
+        return "не повторять"
     local = starts_at.astimezone(ZoneInfo(tz_name))
-    if repeat == "weekly":
-        return _WEEKDAYS_ACC[local.weekday()]
-    if repeat == "monthly":
-        return f"каждый месяц {local.day}-го"
-    return REPEAT_LABELS[repeat]
+    n, unit = split_repeat(repeat)
+    if unit == "w":
+        if n == 1:
+            return _WEEKDAYS_ACC[local.weekday()]
+        return f"{format_period(repeat)}, {_WEEKDAYS_PL[local.weekday()]}"
+    if unit == "m":
+        return f"{format_period(repeat)} {local.day}-го"
+    return format_period(repeat)
+
+
+def format_span(starts_at: datetime, ends_at: datetime | None, tz_name: str,
+                now: datetime | None = None) -> str:  # fmt: skip
+    """«вт, 6 октября, 14:20–19:30»; если конец в другой день — «… 22:00 – ср, 7 октября, 02:00»."""
+    text = format_dt(starts_at, tz_name, now)
+    if ends_at is None:
+        return text
+    zone = ZoneInfo(tz_name)
+    start, end = starts_at.astimezone(zone), ends_at.astimezone(zone)
+    if end.date() == start.date() or (end - start < timedelta(days=1) and end.hour < 6):
+        return f"{text}–{end:%H:%M}"
+    return f"{text} – {format_dt(ends_at, tz_name, now)}"
+
+
+def format_hours(starts_at: datetime, ends_at: datetime | None, tz_name: str) -> str:
+    """Время для строки списка: «14:20» или «14:20–19:30»."""
+    zone = ZoneInfo(tz_name)
+    text = f"{starts_at.astimezone(zone):%H:%M}"
+    if ends_at is not None:
+        text += f"–{ends_at.astimezone(zone):%H:%M}"
+    return text

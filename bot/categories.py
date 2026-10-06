@@ -1,83 +1,47 @@
-"""Категории событий: метка с эмодзи, хэштег в тексте и угадывание по словам."""
+"""Как показывать категории: эмодзи впереди названия события или «· Название» после него."""
 
-import re
+import unicodedata
 
-# ключ в базе → (эмодзи, название)
-CATEGORIES = {
-    "work": ("💼", "Работа"),
-    "home": ("🏠", "Дом"),
-    "health": ("🩺", "Здоровье"),
-    "study": ("📚", "Учёба"),
-    "people": ("👥", "Встречи"),
-    "fun": ("🎉", "Отдых"),
-}
-
-# Хэштеги в тексте: «#работа», «#дом»… (начало слова, чтобы подошло и «#работе»)
-_TAGS = {
-    "работ": "work",
-    "дом": "home",
-    "здоров": "health",
-    "врач": "health",
-    "учёб": "study",
-    "учеб": "study",
-    "встреч": "people",
-    "друз": "people",
-    "семь": "people",
-    "отдых": "fun",
-}
-_HASHTAG = re.compile(r"(?<!\w)#(\w+)")
-
-# Если хэштега нет, угадываем по началу слов в названии
-_GUESS = {
-    "health": (
-        "врач", "стоматолог", "зубн", "терапевт", "анализ", "больниц", "поликлиник",
-        "таблет", "лекарств", "массаж", "тренировк", "спортзал", "зарядк", "бассейн",
-    ),
-    "work": ("работ", "планёрк", "планерк", "созвон", "совещан", "дедлайн", "отчёт", "отчет"),
-    "study": ("урок", "лекци", "экзамен", "зачёт", "зачет", "семинар", "курс", "домашк"),
-    "home": ("уборк", "стирк", "квартплат", "коммунал", "продукт", "магазин", "ремонт"),
-    "people": ("встреч", "день рождени", "др ", "мам", "пап", "бабушк", "подруг", "друз"),
-    "fun": ("кино", "театр", "концерт", "выставк", "музей", "отпуск", "прогулк", "вечеринк"),
-}  # fmt: skip
+NONE_LABEL = "📂 Без категории"
 
 
-def label(category: str | None) -> str:
-    """«💼 Работа»; для события без категории — «Без категории»."""
-    if category not in CATEGORIES:
-        return "Без категории"
-    emoji, name = CATEGORIES[category]
-    return f"{emoji} {name}"
-
-
-def emoji(category: str | None) -> str:
-    return CATEGORIES[category][0] if category in CATEGORIES else ""
-
-
-def with_emoji(title: str, category: str | None) -> str:
-    """Название с эмодзи категории впереди: «🩺 Стоматолог»."""
-    mark = emoji(category)
-    return f"{mark} {title}" if mark else title
-
-
-def extract_hashtag(text: str) -> tuple[str | None, str]:
-    """Находит «#работа» и т.п.; возвращает категорию и текст без этого хэштега."""
-    for m in _HASHTAG.finditer(text):
-        tag = m[1].lower()
-        for prefix, category in _TAGS.items():
-            if tag.startswith(prefix):
-                return category, text[: m.start()] + text[m.end() :]
-    return None, text
-
-
-def guess(title: str) -> str | None:
-    text = f" {title.lower()} "
-    for category, words in _GUESS.items():
-        if any(f" {word}" in text for word in words):
-            return category
+def emoji_of(name: str) -> str | None:
+    """Эмодзи в начале названия категории («💼 Работа» → «💼»), если оно есть."""
+    head = name.split(maxsplit=1)[0] if name.strip() else ""
+    if head and not any(unicodedata.category(ch).startswith(("L", "N")) for ch in head):
+        return head
     return None
 
 
-def detect(text: str) -> tuple[str | None, str]:
-    """Категория по хэштегу, а без него — по словам. Возвращает (категория, текст)."""
-    category, text = extract_hashtag(text)
-    return category or guess(text), text
+def with_category(title: str, name: str | None) -> str:
+    """«💼 Отчёт» для категории с эмодзи, «Отчёт · Собака» для категории без него."""
+    if not name:
+        return title
+    mark = emoji_of(name)
+    return f"{mark} {title}" if mark else f"{title} · {name}"
+
+
+def clean_name(text: str) -> str:
+    """Название новой категории: без лишних пробелов, первая буква заглавная, до 40 символов."""
+    name = " ".join(text.split())[:40]
+    mark = emoji_of(name)
+    if mark and len(name) > len(mark):
+        rest = name[len(mark) :].strip()
+        return f"{mark} {rest[:1].upper()}{rest[1:]}"
+    return name[:1].upper() + name[1:]
+
+
+def match_hashtag(tag: str, names: dict[int, str]) -> int | None:
+    """Категория по хэштегу «#работа» или «#раб»: сравниваем с названием без эмодзи."""
+    tag = tag.lower().replace("ё", "е")
+    if len(tag) < 3:
+        return None
+    for category_id, name in names.items():
+        mark = emoji_of(name)
+        word = (name[len(mark) :] if mark else name).strip().lower().replace("ё", "е")
+        word = word.replace(" ", "_")
+        # «#работе» тоже подходит к «Работа»: сравниваем без последней буквы
+        stem = word[: max(3, len(word) - 1)]
+        if word and (word.startswith(tag) or tag.startswith(stem)):
+            return category_id
+    return None

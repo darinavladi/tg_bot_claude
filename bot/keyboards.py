@@ -1,37 +1,61 @@
 from aiogram.filters.callback_data import CallbackData
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from bot.categories import CATEGORIES
+from bot.categories import NONE_LABEL
 from bot.formatting import format_remind
 
 REMIND_OPTIONS = [0, 15, 60, 1440]
+# Готовые периоды повтора; «custom» — пользователь пишет свой («раз в 3 дня»)
+REPEAT_PRESETS = [
+    ("none", "Не повторять"), ("1d", "Каждый день"), ("wd", "По будням"),
+    ("1w", "Каждую неделю"), ("2w", "Раз в 2 недели"), ("1m", "Каждый месяц"),
+    ("custom", "✏️ Свой период"),
+]  # fmt: skip
 
 
+# Кнопки из старых версий: их обработчик только говорит, что кнопка устарела
 class ConfirmCb(CallbackData, prefix="confirm"):
-    action: str  # save | cancel
+    action: str
 
 
 class RemindCb(CallbackData, prefix="remind"):
     minutes: int
 
 
-def confirm_kb():
+# ---------- Добавление события ----------
+
+
+class AddRepeatCb(CallbackData, prefix="arep"):
+    value: str  # none | код повтора | custom
+
+
+class AddCatCb(CallbackData, prefix="acat"):
+    value: int  # id категории; 0 — без категории; -1 — создать новую
+
+
+def add_repeat_kb():
     kb = InlineKeyboardBuilder()
-    kb.button(text="✅ Сохранить", callback_data=ConfirmCb(action="save"))
-    kb.button(text="❌ Отмена", callback_data=ConfirmCb(action="cancel"))
+    for value, label in REPEAT_PRESETS:
+        kb.button(text=label, callback_data=AddRepeatCb(value=value))
+    kb.adjust(1, 2, 2, 1, 1)
     return kb.as_markup()
 
 
-def remind_kb():
+def add_category_kb(categories: list[tuple[int, str]]):
     kb = InlineKeyboardBuilder()
-    for minutes in REMIND_OPTIONS:
-        kb.button(text=format_remind(minutes).capitalize(), callback_data=RemindCb(minutes=minutes))
-    kb.adjust(2)
+    for category_id, name in categories:
+        kb.button(text=name, callback_data=AddCatCb(value=category_id))
+    kb.button(text=NONE_LABEL, callback_data=AddCatCb(value=0))
+    kb.button(text="➕ Новая категория", callback_data=AddCatCb(value=-1))
+    kb.adjust(*([2] * (len(categories) // 2)), *([1] * (len(categories) % 2)), 1, 1)
     return kb.as_markup()
+
+
+# ---------- Напоминание и завершение ----------
 
 
 class ReminderCb(CallbackData, prefix="rem"):
-    action: str  # done | snooze
+    action: str  # snooze (done — у старых напоминаний)
     event_id: int
     minutes: int = 0
 
@@ -41,13 +65,24 @@ SNOOZE_OPTIONS = [(10, "10 мин"), (60, "1 час")]
 
 def reminder_kb(event_id: int):
     kb = InlineKeyboardBuilder()
-    kb.button(text="✅ Готово", callback_data=ReminderCb(action="done", event_id=event_id))
     for minutes, label in SNOOZE_OPTIONS:
         kb.button(
-            text=f"💤 {label}",
+            text=f"💤 Отложить на {label}",
             callback_data=ReminderCb(action="snooze", event_id=event_id, minutes=minutes),
         )
-    kb.adjust(1, len(SNOOZE_OPTIONS))
+    kb.adjust(len(SNOOZE_OPTIONS))
+    return kb.as_markup()
+
+
+class DoneCb(CallbackData, prefix="done"):
+    event_id: int
+
+
+def done_kb(buttons: list[tuple[str, int]]):
+    kb = InlineKeyboardBuilder()
+    for text, event_id in buttons:
+        kb.button(text=f"✅ {text}"[:60], callback_data=DoneCb(event_id=event_id))
+    kb.adjust(1)
     return kb.as_markup()
 
 
@@ -57,7 +92,8 @@ def reminder_kb(event_id: int):
 class ListCb(CallbackData, prefix="lst"):
     kind: str  # today | week | all
     page: int
-    cat: str = ""  # фильтр по категории ("" — все)
+    cat: int = 0  # фильтр: 0 — все, -1 — без категории, иначе id категории
+    pick: int = 0  # 1 — показать выбор фильтра
 
 
 class EventCb(CallbackData, prefix="ev"):
@@ -68,12 +104,12 @@ class EventCb(CallbackData, prefix="ev"):
 
 class RepeatCb(CallbackData, prefix="rep"):
     event_id: int
-    value: str  # none | daily | weekdays | weekly | monthly
+    value: str  # none | код повтора | custom
 
 
 class CategoryCb(CallbackData, prefix="cat"):
     event_id: int
-    value: str  # none | ключ категории
+    value: int  # id категории; 0 — без категории; -1 — создать новую
 
 
 class EditRemindCb(CallbackData, prefix="erem"):
@@ -83,13 +119,9 @@ class EditRemindCb(CallbackData, prefix="erem"):
 
 def list_kb(
     buttons: list[tuple[str, int]], kind: str, page: int, pages: int,
-    cats: list[str] = (), cat: str = "",
+    has_filter: bool = False, cat: int = 0, cat_label: str = "Все",
 ):  # fmt: skip
-    """Кнопка на каждое событие страницы, ◀️ ▶️ для листания и фильтр по категориям.
-
-    cats — категории, которые есть в списке; фильтр показываем, если их хотя бы две
-    (или если фильтр уже включён, чтобы его можно было снять).
-    """
+    """Кнопка на каждое событие страницы, ◀️ ▶️ для листания и кнопка фильтра."""
     kb = InlineKeyboardBuilder()
     for text, event_id in buttons:
         kb.button(text=text, callback_data=EventCb(action="show", event_id=event_id))
@@ -103,16 +135,23 @@ def list_kb(
         nav += 1
     if nav:
         rows.append(nav)
-    if len(cats) > 1 or cat:
-        kb.button(text="✓ Все" if not cat else "Все", callback_data=ListCb(kind=kind, page=0))
-        for key in cats:
-            mark = CATEGORIES[key][0]
-            kb.button(
-                text=f"✓ {mark}" if key == cat else mark,
-                callback_data=ListCb(kind=kind, page=0, cat=key),
-            )
-        rows.append(len(cats) + 1)
+    if has_filter or cat:
+        kb.button(
+            text=f"🏷 Категория: {cat_label}"[:60],
+            callback_data=ListCb(kind=kind, page=0, cat=cat, pick=1),
+        )
+        rows.append(1)
     kb.adjust(*rows)
+    return kb.as_markup()
+
+
+def list_filter_kb(kind: str, options: list[tuple[int, str]], cat: int):
+    """Выбор категории для списка: options — пары (значение фильтра, подпись)."""
+    kb = InlineKeyboardBuilder()
+    for value, label in [(0, "Все события"), *options]:
+        mark = "✓ " if value == cat else ""
+        kb.button(text=f"{mark}{label}"[:60], callback_data=ListCb(kind=kind, page=0, cat=value))
+    kb.adjust(1)
     return kb.as_markup()
 
 
@@ -214,19 +253,46 @@ def default_remind_kb():
 
 def repeat_kb(event_id: int):
     kb = InlineKeyboardBuilder()
-    for value, label in [
-        ("none", "Не повторять"), ("daily", "Каждый день"), ("weekdays", "По будням"),
-        ("weekly", "Каждую неделю"), ("monthly", "Каждый месяц"),
-    ]:  # fmt: skip
+    for value, label in REPEAT_PRESETS:
         kb.button(text=label, callback_data=RepeatCb(event_id=event_id, value=value))
-    kb.adjust(1, 2, 2)
+    kb.adjust(1, 2, 2, 1, 1)
     return kb.as_markup()
 
 
-def category_kb(event_id: int):
+def category_kb(event_id: int, categories: list[tuple[int, str]]):
     kb = InlineKeyboardBuilder()
-    for key, (mark, name) in CATEGORIES.items():
-        kb.button(text=f"{mark} {name}", callback_data=CategoryCb(event_id=event_id, value=key))
-    kb.button(text="Без категории", callback_data=CategoryCb(event_id=event_id, value="none"))
-    kb.adjust(2, 2, 2, 1)
+    for category_id, name in categories:
+        kb.button(text=name, callback_data=CategoryCb(event_id=event_id, value=category_id))
+    kb.button(text=NONE_LABEL, callback_data=CategoryCb(event_id=event_id, value=0))
+    kb.button(text="➕ Новая категория", callback_data=CategoryCb(event_id=event_id, value=-1))
+    kb.adjust(*([2] * (len(categories) // 2)), *([1] * (len(categories) % 2)), 1, 1)
+    return kb.as_markup()
+
+
+# ---------- /categories ----------
+
+
+class CatManageCb(CallbackData, prefix="cm"):
+    action: str  # add | ask_delete | delete | back
+    category_id: int = 0
+
+
+def categories_kb(categories: list[tuple[int, str]]):
+    kb = InlineKeyboardBuilder()
+    for category_id, name in categories:
+        kb.button(
+            text=f"🗑 {name}"[:60],
+            callback_data=CatManageCb(action="ask_delete", category_id=category_id),
+        )
+    kb.button(text="➕ Добавить категорию", callback_data=CatManageCb(action="add"))
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def category_delete_kb(category_id: int):
+    kb = InlineKeyboardBuilder()
+    kb.button(
+        text="🗑 Да, удалить", callback_data=CatManageCb(action="delete", category_id=category_id)
+    )
+    kb.button(text="Нет", callback_data=CatManageCb(action="back"))
     return kb.as_markup()

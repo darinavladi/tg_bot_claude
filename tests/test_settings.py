@@ -208,12 +208,14 @@ def test_all_keyboards_pack():
     """Каждая кнопка должна упаковываться в callback_data (без «:» в значениях и ≤ 64 байт)."""
     from bot import keyboards as k
 
+    cats = [(1, "💼 Работа"), (22, "Собака"), (333, "🐶 Очень длинное название категории")]
     for markup in [
         k.settings_kb(), k.timezone_kb(), k.summary_kb(), k.default_remind_kb(),
-        k.confirm_kb(), k.remind_kb(), k.reminder_kb(1), k.event_kb(1),
-        k.delete_confirm_kb(1), k.edit_remind_kb(1), k.list_kb([("a", 1)], "all", 1, 3),
-        k.repeat_kb(1), k.category_kb(1),
-        k.list_kb([("a", 1)], "week", 1, 3, ["work", "health"], "health"),
+        k.reminder_kb(1), k.event_kb(1), k.delete_confirm_kb(1), k.edit_remind_kb(1),
+        k.list_kb([("a", 1)], "all", 1, 3, True, 333, "Собака"),
+        k.list_filter_kb("week", [(-1, "📂 Без категории"), *cats], -1),
+        k.repeat_kb(1), k.category_kb(1, cats), k.add_repeat_kb(), k.add_category_kb(cats),
+        k.done_kb([("10:00 Врач", 5)]), k.categories_kb(cats), k.category_delete_kb(333),
     ]:  # fmt: skip
         for row in markup.inline_keyboard:
             for button in row:
