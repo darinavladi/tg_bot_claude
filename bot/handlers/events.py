@@ -1,11 +1,14 @@
 """Добавление события: по шагам (/add) или одной фразой, затем вопросы о повторе и категории.
 
-Шаги: что за событие → когда (время или промежуток) → повторять ли → категория → сохранено.
+Шаги: что за событие → день (календарь) → время начала → до скольких → повторять ли →
+категория → сохранено. Дату и время можно и написать текстом: «завтра 14:20–19:30».
 Из фразы «каждый понедельник в 10 планёрка #работа» бот берёт всё, что в ней есть,
 и спрашивает только недостающее.
 """
 
-from datetime import datetime, timedelta
+import re
+from datetime import UTC, date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
 from aiogram.filters import Command, StateFilter
@@ -16,17 +19,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot import categories, repo
 from bot.config import Config
-from bot.formatting import format_remind, format_repeat, format_span
+from bot.formatting import format_day, format_remind, format_repeat, format_span
 from bot.keyboards import (
     AddCatCb,
     AddRepeatCb,
+    CalCb,
     ConfirmCb,
+    EndCb,
     RemindCb,
+    TimeCb,
     add_category_kb,
     add_repeat_kb,
+    calendar_kb,
+    end_kb,
+    hours_kb,
+    main_menu,
+    minutes_kb,
 )
 from bot.parser import ParseError, parse_event, parse_period, parse_when
 from bot.reminders import Reminders
+from bot.timeutils import parse_hhmm
 
 router = Router(name="events")
 
@@ -45,7 +57,9 @@ CATEGORY_NAME_HINT = "Как назвать новую категорию? Мо�
 
 class AddEvent(StatesGroup):
     title = State()
-    when = State()
+    when = State()  # календарь (или дата и время текстом)
+    time = State()  # время начала кнопками (или текстом)
+    end = State()  # до скольких
     repeat = State()  # ждём кнопку повтора
     repeat_custom = State()  # ждём свой период текстом
     category = State()  # ждём кнопку категории
@@ -133,7 +147,7 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
         await message.answer("Сейчас нечего отменять.")
         return
     await state.clear()
-    await message.answer("Отменено, событие не сохранено.")
+    await message.answer("Отменено, событие не сохранено.", reply_markup=main_menu())
 
 
 # ---------- Шаг 1–2: что и когда (/add) ----------
@@ -143,18 +157,37 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
 async def cmd_add(message: Message, state: FSMContext) -> None:
     await state.clear()
     await state.set_state(AddEvent.title)
-    await message.answer("Что за событие? Напишите название. (отменить: /cancel)")
+    await message.answer("✏️ Что за событие? Напишите название.\n(отменить: /cancel)")
+
+
+WHEN_PROMPT = (
+    "📅 Когда? Выберите день в календаре.\n"
+    "Или напишите дату и время сразу: «завтра 14:20–19:30», «15.10 в 9»."
+)
+TIME_PROMPT = "🕒 Во сколько начало? Выберите час или напишите время: «14:20» или «14:20–19:30»."
+END_PROMPT = "⏳ До скольких? Выберите длительность или напишите время окончания: «19:30»."
+
+
+def _today(tz: str) -> date:
+    return datetime.now(ZoneInfo(tz)).date()
 
 
 @router.message(AddEvent.title, F.text)
-async def add_title(message: Message, state: FSMContext) -> None:
+async def add_title(
+    message: Message, state: FSMContext, session: AsyncSession | None = None,
+    config: Config | None = None,
+) -> None:  # fmt: skip
     title = " ".join(message.text.split())
     if not title or title.startswith("/"):
         await message.answer("Напишите название текстом, например: «Встреча с Аней».")
         return
     await state.update_data(title=title[:1].upper() + title[1:500])
     await state.set_state(AddEvent.when)
-    await message.answer(f"Когда? Укажите дату и время или промежуток времени.\n{WHEN_HINT}")
+    tz = config.default_tz if config else "Europe/Moscow"
+    if session is not None and config is not None:
+        tz = (await repo.get_or_create_user(session, message.from_user.id, tz)).timezone
+    today = _today(tz)
+    await message.answer(WHEN_PROMPT, reply_markup=calendar_kb(today.year, today.month, today))
 
 
 @router.message(AddEvent.when, F.text)
@@ -168,14 +201,173 @@ async def add_when(
     except ParseError as e:
         await message.answer(f"{e}\nПопробуйте ещё раз. {WHEN_HINT}")
         return
+    await _save_when(
+        state, parsed.starts_at, parsed.ends_at, parsed.repeat, user.default_remind_min
+    )
+    await _next_step(message, state, session, user.id, user.timezone, reminders)
+
+
+async def _save_when(
+    state: FSMContext, starts_at: datetime, ends_at: datetime | None, repeat: str | None,
+    remind: int,
+) -> None:  # fmt: skip
     data = {
-        "starts_at": parsed.starts_at.isoformat(),
-        "ends_at": parsed.ends_at.isoformat() if parsed.ends_at else None,
-        "remind": user.default_remind_min,
+        "starts_at": starts_at.isoformat(),
+        "ends_at": ends_at.isoformat() if ends_at else None,
+        "remind": remind,
     }
-    if parsed.repeat:
-        data["repeat"] = parsed.repeat
+    if repeat:
+        data["repeat"] = repeat
     await state.update_data(**data)
+
+
+# ---------- Шаг 2 кнопками: календарь → час → минуты → длительность ----------
+
+
+@router.callback_query(AddEvent.when, CalCb.filter())
+async def add_calendar(
+    callback: CallbackQuery, callback_data: CalCb, state: FSMContext, session: AsyncSession,
+    config: Config,
+) -> None:  # fmt: skip
+    if callback_data.action == "noop":
+        await callback.answer()
+        return
+    user = await repo.get_or_create_user(session, callback.from_user.id, config.default_tz)
+    today = _today(user.timezone)
+    if callback_data.action == "nav":
+        await callback.message.edit_reply_markup(
+            reply_markup=calendar_kb(callback_data.y, callback_data.m, today)
+        )
+        await callback.answer()
+        return
+    day = date(callback_data.y, callback_data.m, callback_data.d)
+    if day < today:
+        await callback.answer("Этот день уже прошёл.", show_alert=True)
+        return
+    await state.update_data(day=day.isoformat())
+    await state.set_state(AddEvent.time)
+    await _ask_hours(callback.message, state, user.timezone)
+    await callback.answer()
+
+
+async def _ask_hours(message: Message, state: FSMContext, tz: str) -> None:
+    data = await state.get_data()
+    day = date.fromisoformat(data["day"])
+    now = datetime.now(ZoneInfo(tz))
+    min_hour = now.hour if day == now.date() else 0
+    head = f"📅 {data['title']}\n🗓 {format_day(_at(day, time(12), tz), tz)}"
+    await message.edit_text(f"{head}\n\n{TIME_PROMPT}", reply_markup=hours_kb(min_hour))
+
+
+def _at(day: date, t: time, tz: str) -> datetime:
+    return datetime.combine(day, t, tzinfo=ZoneInfo(tz))
+
+
+@router.callback_query(AddEvent.time, TimeCb.filter())
+async def add_time(
+    callback: CallbackQuery, callback_data: TimeCb, state: FSMContext, session: AsyncSession,
+    config: Config,
+) -> None:  # fmt: skip
+    user = await repo.get_or_create_user(session, callback.from_user.id, config.default_tz)
+    data = await state.get_data()
+    if callback_data.kind == "back":
+        await state.set_state(AddEvent.when)
+        today = _today(user.timezone)
+        await callback.message.edit_text(
+            WHEN_PROMPT, reply_markup=calendar_kb(today.year, today.month, today)
+        )
+    elif callback_data.kind == "hours":
+        await _ask_hours(callback.message, state, user.timezone)
+    elif callback_data.kind == "h":
+        await state.update_data(hour=callback_data.v)
+        await callback.message.edit_reply_markup(reply_markup=minutes_kb(callback_data.v))
+    else:
+        starts_at = _at(
+            date.fromisoformat(data["day"]), time(data["hour"], callback_data.v), user.timezone
+        )
+        if starts_at <= datetime.now(UTC):
+            await callback.answer("Это время уже прошло, выберите другое.", show_alert=True)
+            return
+        await state.update_data(starts_at=starts_at.isoformat(), remind=user.default_remind_min)
+        await _ask_end(callback.message, state, user.timezone, edit=True)
+    await callback.answer()
+
+
+async def _ask_end(message: Message, state: FSMContext, tz: str, edit: bool) -> None:
+    await state.set_state(AddEvent.end)
+    data = await state.get_data()
+    text = f"📅 {data['title']}\n🕒 {format_span(_dt(data['starts_at']), None, tz)}\n\n{END_PROMPT}"
+    send = message.edit_text if edit else message.answer
+    await send(text, reply_markup=end_kb())
+
+
+@router.message(AddEvent.time, F.text, ~F.text.startswith("/"))
+async def add_time_text(
+    message: Message, state: FSMContext, session: AsyncSession, config: Config,
+    reminders: Reminders,
+) -> None:  # fmt: skip
+    """Время начала (или промежуток) текстом для уже выбранного дня."""
+    user = await repo.get_or_create_user(session, message.from_user.id, config.default_tz)
+    data = await state.get_data()
+    day = date.fromisoformat(data["day"])
+    typed = message.text.strip()
+    if re.fullmatch(r"\d{1,2}", typed):
+        typed = f"в {typed}"
+    try:
+        parsed = parse_when(f"{day:%d.%m.%Y} {typed}", user.timezone)
+    except ParseError as e:
+        await message.answer(f"{e}\n{TIME_PROMPT}")
+        return
+    await _save_when(
+        state, parsed.starts_at, parsed.ends_at, parsed.repeat, user.default_remind_min
+    )
+    if parsed.ends_at is None:
+        await _ask_end(message, state, user.timezone, edit=False)
+        return
+    await _next_step(message, state, session, user.id, user.timezone, reminders)
+
+
+@router.callback_query(AddEvent.end, EndCb.filter())
+async def add_end(
+    callback: CallbackQuery, callback_data: EndCb, state: FSMContext, session: AsyncSession,
+    config: Config, reminders: Reminders,
+) -> None:  # fmt: skip
+    user = await repo.get_or_create_user(session, callback.from_user.id, config.default_tz)
+    if callback_data.minutes < 0:
+        await state.set_state(AddEvent.time)
+        data = await state.get_data()
+        if "day" not in data:
+            await state.update_data(day=_dt(data["starts_at"]).date().isoformat())
+        await _ask_hours(callback.message, state, user.timezone)
+        await callback.answer()
+        return
+    data = await state.get_data()
+    ends_at = None
+    if callback_data.minutes:
+        ends_at = _dt(data["starts_at"]) + timedelta(minutes=callback_data.minutes)
+    await state.update_data(ends_at=ends_at.isoformat() if ends_at else None)
+    await _next_step(callback.message, state, session, user.id, user.timezone, reminders, edit=True)
+    await callback.answer()
+
+
+@router.message(AddEvent.end, F.text, ~F.text.startswith("/"))
+async def add_end_text(
+    message: Message, state: FSMContext, session: AsyncSession, config: Config,
+    reminders: Reminders,
+) -> None:  # fmt: skip
+    user = await repo.get_or_create_user(session, message.from_user.id, config.default_tz)
+    hhmm = parse_hhmm(message.text.strip().removeprefix("до").strip())
+    if hhmm is None:
+        await message.answer(f"Не понял время окончания.\n{END_PROMPT}")
+        return
+    data = await state.get_data()
+    starts_at = _dt(data["starts_at"])
+    local = starts_at.astimezone(ZoneInfo(user.timezone))
+    hour, minute = map(int, hhmm.split(":"))
+    ends_at = local.replace(hour=hour, minute=minute)
+    if ends_at <= local:
+        ends_at += timedelta(days=1)  # «с 22:00 до 02:00»
+    await state.update_data(ends_at=ends_at.isoformat())
     await _next_step(message, state, session, user.id, user.timezone, reminders)
 
 
@@ -306,6 +498,9 @@ async def add_category_text(
 
 @router.callback_query(AddRepeatCb.filter())
 @router.callback_query(AddCatCb.filter())
+@router.callback_query(CalCb.filter())
+@router.callback_query(TimeCb.filter())
+@router.callback_query(EndCb.filter())
 @router.callback_query(ConfirmCb.filter())
 @router.callback_query(RemindCb.filter())
 async def stale_button(callback: CallbackQuery) -> None:

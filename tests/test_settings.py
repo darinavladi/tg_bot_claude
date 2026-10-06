@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -216,6 +216,7 @@ def test_all_keyboards_pack():
         k.list_filter_kb("week", [(-1, "📂 Без категории"), *cats], -1),
         k.repeat_kb(1), k.category_kb(1, cats), k.add_repeat_kb(), k.add_category_kb(cats),
         k.done_kb([("10:00 Врач", 5)]), k.categories_kb(cats), k.category_delete_kb(333),
+        k.calendar_kb(2026, 12, date(2026, 10, 6)), k.hours_kb(), k.minutes_kb(23), k.end_kb(),
     ]:  # fmt: skip
         for row in markup.inline_keyboard:
             for button in row:
